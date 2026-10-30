@@ -47,6 +47,21 @@ def texto(t: str) -> dict[str, Any]:
     return {"type": "text", "text": t}
 
 
+def antes_de_ferramenta(t: str) -> dict[str, Any]:
+    """Texto que precede uma chamada de ferramenta. Termina em linha em branco: na tela os blocos de texto da mesma
+    resposta chegam como um fluxo só de deltas, e sem a quebra o "Vou conferir." colaria no parágrafo seguinte."""
+    return texto(t.rstrip("\n") + "\n\n")
+
+
+def paragrafos(*partes: str) -> str:
+    """Markdown com parágrafos separados por linha em branco (uma quebra simples o Markdown junta numa linha só)."""
+    return "\n\n".join(partes)
+
+
+def lista(*itens: str) -> str:
+    return "\n".join(f"- {i}" for i in itens)
+
+
 _ids = count(1)
 
 
@@ -198,7 +213,7 @@ def roteiro(conv: Conversa) -> list[dict[str, Any]]:
     if obra is None:
         obras = conv.resultado("listar_obras")
         if obras is None:
-            return [texto("Vou ver suas obras."), ferramenta("listar_obras", {})]
+            return [antes_de_ferramenta("Vou ver suas obras."), ferramenta("listar_obras", {})]
         if not obras:
             return [texto("Não encontrei nenhuma obra na sua conta.")]
         obra = obras[0]["obra_id"]
@@ -206,27 +221,29 @@ def roteiro(conv: Conversa) -> list[dict[str, Any]]:
     busca = {"blocos": "bloco", "cimento": "cimento", "aco": "aço"}[alvo]
     estoque = conv.resultado("consultar_estoque")
     if estoque is None:
-        return [texto("Vou conferir o almoxarifado."), ferramenta("consultar_estoque", {"obra_id": obra, "busca": busca})]
+        return [antes_de_ferramenta("Vou conferir o almoxarifado."), ferramenta("consultar_estoque", {"obra_id": obra, "busca": busca})]
     if not estoque["insumos"]:
         return [texto(f"Não achei {busca} no almoxarifado desta obra.")]
     item = estoque["insumos"][0]
     conta, fmt = item["conta_milesimos"], item["conta_formatada"]
+    # A conta vai num parágrafo só dela, como a ferramenta devolveu: é o que a pessoa confere.
+    cabeca = (f"{item['nome']}, pelo almoxarifado:", item["linha_conta"])
 
     if alvo == "aco":
         if conta["falta"] == 0:
-            return [texto(f"{item['nome']}: {item['linha_conta']}. Os {fmt['cotando']} já estão em cotação e a falta "
-                          f"é {fmt['falta']}; não precisa pedir.")]
-        return [texto(f"{item['nome']}: {item['linha_conta']}. Falta {fmt['falta']}; posso propor o pedido.")]
+            return [texto(paragrafos(*cabeca, f"Os {fmt['cotando']} já estão em cotação e a falta é "
+                                              f"**{fmt['falta']}**: **não precisa pedir**."))]
+        return [texto(paragrafos(*cabeca, f"Falta **{fmt['falta']}**. Posso propor o pedido."))]
 
     if alvo == "cimento":
         proposta = conv.resultado("propor_pedido")
         if proposta is not None:
-            return [texto(f"Deixei a proposta \"{proposta.get('titulo')}\" aguardando aprovação. Nada foi comprado "
-                          f"ainda. Conta: {item['linha_conta']}.")]
+            return [texto(paragrafos(f"Deixei a proposta \"{proposta.get('titulo')}\" **aguardando aprovação**. "
+                                     f"Nada foi comprado ainda.", "Conta:", item["linha_conta"]))]
         if conta["comprar"] == 0:
-            return [texto(f"{item['nome']}: {item['linha_conta']}. Não precisa comprar.")]
+            return [texto(paragrafos(*cabeca, "Não precisa comprar."))]
         return [
-            texto(f"{item['nome']}: {item['linha_conta']}. Vou propor o pedido de {fmt['comprar']}."),
+            antes_de_ferramenta(paragrafos(*cabeca, f"Vou propor o pedido de **{fmt['comprar']}**.")),
             ferramenta("propor_pedido", {
                 "obra_id": obra, "insumo_id": item["insumo_id"],
                 "quantidade": _qtd_para_ferramenta(conta["comprar"]),
@@ -242,15 +259,20 @@ def roteiro(conv: Conversa) -> list[dict[str, Any]]:
         return [ferramenta("historico_movimentos", {"obra_id": obra, "insumo_id": item["insumo_id"], "limite": 50})]
     saidas = [m for m in movimentos if m.get("tipo") == "saida"]
     quebras = [m for m in saidas if "quebra" in _sem_acento(m.get("destino") or "")]
-    linha = f"{item['nome']}: {item['linha_conta']}."
     if not quebras:
-        return [texto(f"{linha} Não há quebra registrada nas saídas.")]
+        return [texto(paragrafos(*cabeca, "Não há quebra registrada nas saídas."))]
     # Só no roteiro de teste: o agente de verdade não calcula índice (ver README).
     q, s = sum(m["quantidade_milesimos"] for m in quebras), sum(m["quantidade_milesimos"] for m in saidas)
     un = item["unidade"]
-    return [texto(f"{linha} Das saídas, {fmt_qtd(q)} {un} foram quebra ({quebras[0]['destino']}), "
-                  f"{round(100 * q / s)}% de {fmt_qtd(s)} {un} que saíram. Não proponho ajuste: o saldo já desconta "
-                  f"a quebra.")]
+    return [texto(paragrafos(
+        *cabeca,
+        "Das saídas registradas:\n\n" + lista(
+            f"saíram {fmt_qtd(s)} {un} no total",
+            f"{fmt_qtd(q)} {un} foram quebra ({quebras[0]['destino']})",
+            f"a quebra é **{round(100 * q / s)}%** do que saiu",
+        ),
+        "Não proponho ajuste: o saldo já desconta a quebra.",
+    ))]
 
 
 def _tokens(dado: Any) -> int:
