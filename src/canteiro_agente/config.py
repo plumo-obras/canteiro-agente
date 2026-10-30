@@ -19,6 +19,8 @@ class Config:
     # Token de serviço do agente: só para `POST /uso`. Dados do cliente sempre com o token do usuário.
     token_servico: str | None
     modelo: str = MODELO_PADRAO
+    # Demo hospedada sem chave: o modelo falso roda dentro do próprio processo (0 tokens, nada é cobrado da Anthropic).
+    modelo_roteiro: bool = False
     max_tokens: int = 16000
     max_iteracoes: int = 12
 
@@ -29,4 +31,5 @@ class Config:
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
             token_servico=os.environ.get("TOKEN_SERVICO_AGENTE") or None,
             modelo=os.environ.get("AGENTE_MODELO", MODELO_PADRAO),
+            modelo_roteiro=os.environ.get("MODELO_ROTEIRO", "") == "1",
         )

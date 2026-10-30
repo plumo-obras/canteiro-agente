@@ -40,6 +40,19 @@ async def _sse(eventos: AsyncIterator[Evento]) -> AsyncIterator[str]:
         yield formatar_sse(("erro", {"mensagem": "Algo deu errado do nosso lado. Tente de novo."}))
 
 
+def _cliente_plataforma(config: Config) -> AsyncAnthropic | None:
+    if config.modelo_roteiro:
+        # Modo de demonstração: o SDK de verdade conversa com o modelo de roteiro no mesmo processo, sem rede.
+        # Para usar o Claude, desligue MODELO_ROTEIRO e defina ANTHROPIC_API_KEY.
+        import httpx2
+        from anthropic import DefaultAsyncHttpxClient
+
+        from .modelo_roteiro import criar_app as criar_roteiro
+        return AsyncAnthropic(api_key="roteiro", base_url="http://roteiro", max_retries=0,
+                              http_client=DefaultAsyncHttpxClient(transport=httpx2.ASGITransport(app=criar_roteiro())))
+    return AsyncAnthropic(api_key=config.anthropic_api_key) if config.anthropic_api_key else None
+
+
 def dependencias_padrao() -> Dependencias:
     config = Config.do_ambiente()
     if config.modelo not in PRECOS:
@@ -52,7 +65,7 @@ def dependencias_padrao() -> Dependencias:
         sessoes=SessoesApi(http_api, config.api_url),
         fonte_chave=FonteChaveApi(http_api, config.api_url, config.token_servico) if config.token_servico
         else SemChaveCliente(),
-        cliente_plataforma=AsyncAnthropic(api_key=config.anthropic_api_key) if config.anthropic_api_key else None,
+        cliente_plataforma=_cliente_plataforma(config),
         fabrica_cliente_proprio=lambda chave: AsyncAnthropic(api_key=chave),
     )
 

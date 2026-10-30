@@ -78,3 +78,16 @@ async def test_outra_coisa_nao_sabe_e_uso_e_plausivel(com_roteiro):
     c = uso.corpo
     assert c["tokens_cache_escrita"] > 500 and c["tokens_entrada"] > 0 and c["tokens_saida"] > 0
     assert c["custo_microdolares"] > 0
+
+
+def test_modo_roteiro_pelo_ambiente_nao_usa_chave(monkeypatch):
+    """MODELO_ROTEIRO=1: a demo hospedada sobe sem ANTHROPIC_API_KEY e o cliente aponta para o roteiro em processo."""
+    from canteiro_agente.config import Config
+    from canteiro_agente.main import _cliente_plataforma
+
+    monkeypatch.setenv("MODELO_ROTEIRO", "1")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    cfg = Config.do_ambiente()
+    assert cfg.modelo_roteiro and cfg.anthropic_api_key is None
+    cliente = _cliente_plataforma(cfg)
+    assert cliente is not None and str(cliente.base_url).startswith("http://roteiro")
