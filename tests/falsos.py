@@ -33,6 +33,7 @@ ACO = "insumo-aco"
 CIMENTO = "insumo-cimento"
 BLOCO = "insumo-bloco"
 PED_ACO = "pedido-0158"
+PED_CIMENTO = "pedido-0160"
 
 
 @dataclass
@@ -71,13 +72,15 @@ class ApiFalsa:
 
     def _movimentos(self) -> list[dict[str, Any]]:
         m = lambda tipo, q, destino=None, doc=None: {"tipo": tipo, "quantidade": q, "destino": destino,  # noqa: E731
-                                                     "origem_doc": doc, "quem": "u1", "origem": "tela"}
+                                                     "origem_doc": doc, "quem": "Joana (mestre)", "origem": "tela"}
         return [m("saida", 190_000, "Quebra no descarregamento"), m("saida", 1_050_000, "Alvenaria do térreo"),
                 m("entrada", 4_000_000, doc="NF 4471")]
 
     def _pedidos(self) -> list[dict[str, Any]]:
         return [{"id": PED_ACO, "numero": "PED-0158", "obra_id": OBRA, "insumo_id": ACO, "quantidade": 3_200_000,
-                 "fornecedor": "Gerdau", "valor": 2_048_000, "status": "em_transito", "previsao": "2026-11-03"}]
+                 "fornecedor": "Gerdau", "valor": 2_048_000, "status": "em_transito", "previsao": "2026-11-03"},
+                {"id": PED_CIMENTO, "numero": "PED-0160", "obra_id": OBRA, "insumo_id": CIMENTO, "quantidade": 120_000,
+                 "fornecedor": "Depósito São Jorge", "valor": 456_000, "status": "recebido", "previsao": "2026-11-01"}]
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         corpo = json.loads(req.content) if req.content else None

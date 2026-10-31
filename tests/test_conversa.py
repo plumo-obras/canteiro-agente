@@ -1,7 +1,7 @@
 """POST /conversa de ponta a ponta, com a API central e a Anthropic dubladas."""
 import json
 
-from falsos import ACO, OBRA, PED_ACO, TOKEN_SERVICO, TOKEN_USUARIO, Resposta, ferramenta, texto
+from falsos import ACO, OBRA, PED_ACO, PED_CIMENTO, TOKEN_SERVICO, TOKEN_USUARIO, Resposta, ferramenta, texto
 
 FERRAMENTAS = {
     "listar_obras", "consultar_estoque", "historico_movimentos", "listar_pedidos",
@@ -123,6 +123,33 @@ async def test_avanco_invalido_e_barrado_pela_regra_do_dominio(ambiente):
     [res] = _tool_results(amb.anthropic.pedidos[1])
     assert res["is_error"] is True
     assert "não pode ir de 'em_transito' para 'conferido'" in _texto_resultado(res)
+
+
+async def test_conferir_com_quantidade_recebida_e_nf_vai_nos_dados(ambiente):
+    amb = ambiente([
+        Resposta([ferramenta("propor_avanco_pedido", {
+            "obra_id": OBRA, "pedido_id": PED_CIMENTO, "para": "conferido", "justificativa": "mestre conferiu",
+            "quantidade_recebida": "110", "nf": " 4471 "})], stop_reason="tool_use"),
+        Resposta([texto("Proposta de conferência aguardando aprovação.")]),
+    ])
+    await amb.conversar("chegaram só 110 sacos do cimento, NF 4471")
+    [corpo] = [c.corpo for c in amb.api.feitas("POST", "/propostas")]
+    assert corpo["dados"] == {"pedido_id": PED_CIMENTO, "para": "conferido", "quantidade_recebida": 110_000,
+                              "nf": "4471"}
+    assert corpo["titulo"] == "PED-0160: recebido → conferido · chegaram 110 de 120 sc (NF 4471)"
+
+
+async def test_quantidade_recebida_fora_da_conferencia_e_barrada(ambiente):
+    amb = ambiente([
+        Resposta([ferramenta("propor_avanco_pedido", {
+            "obra_id": OBRA, "pedido_id": PED_ACO, "para": "recebido", "justificativa": "chegou",
+            "quantidade_recebida": "3000"})], stop_reason="tool_use"),
+        Resposta([texto("Quantidade recebida só entra ao conferir.")]),
+    ])
+    await amb.conversar("o aço chegou, 3000 kg")
+    assert not amb.api.feitas("POST", "/propostas")
+    [res] = _tool_results(amb.anthropic.pedidos[1])
+    assert res["is_error"] is True and "só valem ao conferir" in _texto_resultado(res)
 
 
 async def test_sem_creditos_vira_erro_e_nao_chama_o_modelo(ambiente):

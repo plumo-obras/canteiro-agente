@@ -16,7 +16,7 @@ from anthropic import beta_async_tool
 from anthropic.lib.tools import ToolError
 
 from canteiro_dominio.modelos import StatusPedido
-from canteiro_dominio.regras import RegraViolada, validar_transicao
+from canteiro_dominio.regras import RegraViolada, validar_conferencia, validar_transicao
 from canteiro_dominio.tipos import fmt_qtd, fmt_reais, qtd, reais
 
 from .api_central import ApiCentral, ErroApi
@@ -106,6 +106,9 @@ def _pedido(p: dict[str, Any]) -> dict[str, Any]:
         "valor_centavos": p.get("valor"),
         "valor": fmt_reais(p.get("valor", 0)),
         "previsao": p.get("previsao"),
+        # só depois de conferido: o que chegou de fato (pode diferir do pedido) e a NF
+        "quantidade_recebida_milesimos": p.get("quantidade_recebida"),
+        "nf": p.get("nf"),
     }
 
 
@@ -249,7 +252,9 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         """Propõe um pedido de compra. NÃO compra: cria uma proposta que uma pessoa aprova ou recusa na tela.
 
         Use quando a pessoa pedir para comprar/pedir material e você já tiver insumo, quantidade, fornecedor e valor.
-        Se faltar algum desses dados, pergunte antes. A conta de falta anexada vem do sistema, não de você.
+        Se faltar algum desses dados, pergunte antes. Aprovada, a proposta vira um pedido já aprovado (a caminho), sem
+        segunda aprovação; quem aprova pode corrigir quantidade, fornecedor, valor e previsão antes. A conta de falta
+        anexada vem do sistema, não de você.
 
         Args:
             obra_id: ID da obra.
@@ -276,19 +281,33 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         })
 
     @beta_async_tool(eager_input_streaming=True)
-    async def propor_avanco_pedido(obra_id: str, pedido_id: str, para: StatusTexto, justificativa: str) -> str:
+    async def propor_avanco_pedido(
+        obra_id: str, pedido_id: str, para: StatusTexto, justificativa: str,
+        quantidade_recebida: str | None = None, nf: str | None = None,
+    ) -> str:
         """Propõe mudar o status de um pedido (ex.: em_transito → recebido). NÃO muda: cria uma proposta para aprovação.
 
         Use quando a pessoa disser que o pedido foi aprovado, enviado, chegou, foi conferido ou deve ser cancelado.
         Ir para "conferido" dá entrada no almoxarifado quando aprovado. Ache o pedido_id com listar_pedidos antes.
+        Ao conferir, se a pessoa disser que chegou quantidade diferente da pedida, informe quantidade_recebida (entra
+        o que chegou; a diferença volta a aparecer como falta). Se ela disser o número da nota, informe nf.
 
         Args:
             obra_id: ID da obra do pedido.
             pedido_id: ID do pedido (de listar_pedidos), não o número PED-NNNN.
             para: Status de destino.
             justificativa: Uma frase com o motivo (ex.: "mestre confirmou a chegada do caminhão").
+            quantidade_recebida: Só com para = "conferido": o que chegou de fato, na unidade do insumo, com vírgula
+                decimal ("36", "1,5"). Omita se chegou exatamente o pedido.
+            nf: Só com para = "conferido": número da nota fiscal da entrega, como a pessoa disse.
         """
         eventos.ferramenta("propor_avanco_pedido", f"preparou uma proposta de avanço de pedido para {para}")
+        q = _ler_qtd(quantidade_recebida, "quantidade_recebida") if quantidade_recebida else None
+        nf = (nf or "").strip() or None
+        try:
+            validar_conferencia(StatusPedido(para), quantidade_recebida=q, nf=nf)
+        except RegraViolada as e:
+            raise ToolError(str(e)) from None
         try:
             pedidos = await api.pedidos(obra_id)
         except ErroApi as e:
@@ -300,14 +319,25 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             validar_transicao(StatusPedido(pedido["status"]), StatusPedido(para))
         except RegraViolada as e:
             raise ToolError(str(e)) from None
+        titulo = f"{pedido.get('numero')}: {pedido['status']} → {para}"
+        if q is not None and q != pedido.get("quantidade"):
+            un = (await _item_do_insumo(obra_id, pedido["insumo_id"]))["insumo"].get("unidade", "")
+            titulo += f" · chegaram {fmt_qtd(q)} de {_qtd_un(pedido.get('quantidade', 0), un)}"
+        if nf:
+            titulo += f" (NF {nf})"
+        dados: dict[str, Any] = {"pedido_id": pedido_id, "para": para}
+        if q is not None:
+            dados["quantidade_recebida"] = q
+        if nf:
+            dados["nf"] = nf
         return await _propor({
             "obra_id": obra_id,
             "tipo": "avancar_pedido",
-            "titulo": f"{pedido.get('numero')}: {pedido['status']} → {para}",
+            "titulo": titulo,
             "justificativa": justificativa,
             "conta": "",
             "fonte": f"pedido {pedido.get('numero')} ({pedido.get('fornecedor')})",
-            "dados": {"pedido_id": pedido_id, "para": para},
+            "dados": dados,
         })
 
     @beta_async_tool(eager_input_streaming=True)
