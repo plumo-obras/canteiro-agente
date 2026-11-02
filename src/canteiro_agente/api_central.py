@@ -66,6 +66,21 @@ class ApiCentral:
         params = {"status": status} if status else None
         return await self._req("GET", f"/obras/{obra_id}/pedidos", params=params)
 
+    async def orcamento(self, obra_id: str) -> dict[str, Any]:
+        return await self._req("GET", f"/obras/{obra_id}/orcamento")
+
+    async def etapas(self, obra_id: str) -> list[dict[str, Any]]:
+        return await self._req("GET", f"/obras/{obra_id}/etapas")
+
+    async def cronograma(self, obra_id: str) -> dict[str, Any]:
+        return await self._req("GET", f"/obras/{obra_id}/cronograma")
+
+    async def fornecedores(self) -> list[dict[str, Any]]:
+        return await self._req("GET", "/fornecedores")
+
+    async def recebimentos(self, pedido_id: str) -> list[dict[str, Any]]:
+        return await self._req("GET", f"/pedidos/{pedido_id}/recebimentos")
+
     async def criar_proposta(self, corpo: dict[str, Any]) -> dict[str, Any]:
         return await self._req("POST", "/propostas", json=corpo)
 

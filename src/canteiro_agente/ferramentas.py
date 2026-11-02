@@ -1,4 +1,4 @@
-"""As 7 ferramentas do contrato. Cada uma chama a API central com o token do usuário.
+"""As ferramentas do contrato. Cada uma chama a API central com o token do usuário.
 
 Devolvem números brutos (milésimos, centavos, como a API manda) e formatados ("2.760 un", "R$ 472,00"), mais a
 linha de conta pronta, para o modelo citar sem fazer conta. As de nível `propoe` só criam proposta (`POST /propostas`):
@@ -27,12 +27,16 @@ NIVEIS: dict[str, Nivel] = {
     "consultar_estoque": "consulta",
     "historico_movimentos": "consulta",
     "listar_pedidos": "consulta",
+    "consultar_orcamento": "consulta",
+    "consultar_cronograma": "consulta",
+    "listar_fornecedores": "consulta",
     "propor_pedido": "propoe",
     "propor_avanco_pedido": "propoe",
     "propor_ajuste_estoque": "propoe",
 }
 
-StatusTexto = Literal["em_cotacao", "aprovado", "enviado", "em_transito", "recebido", "conferido", "cancelado"]
+StatusTexto = Literal["em_cotacao", "aprovado", "enviado", "em_transito", "recebido", "parcial", "conferido",
+                      "cancelado"]
 
 
 @dataclass
@@ -94,22 +98,55 @@ def _item_estoque(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _linhas(p: dict[str, Any]) -> list[dict[str, Any]]:
+    # pedido de antes das linhas (um insumo só) ainda pode aparecer em dado antigo
+    if p.get("linhas"):
+        return p["linhas"]
+    return [{"insumo_id": p.get("insumo_id"), "quantidade": p.get("quantidade", 0), "total": p.get("valor", 0),
+             "recebida": p.get("quantidade_recebida") or 0, "nome": "", "unidade": ""}]
+
+
 def _pedido(p: dict[str, Any]) -> dict[str, Any]:
+    linhas = []
+    for x in _linhas(p):
+        un = x.get("unidade", "")
+        falta = max(0, x.get("quantidade", 0) - x.get("recebida", 0))
+        linhas.append({
+            "insumo_id": x.get("insumo_id"),
+            "nome": x.get("nome"),
+            "tipo": x.get("tipo", "material"),
+            "etapa": x.get("etapa"),
+            "quantidade": _qtd_un(x.get("quantidade", 0), un),
+            "recebida": _qtd_un(x.get("recebida", 0), un),
+            "falta_entregar": _qtd_un(falta, un),
+            "falta_entregar_milesimos": falta,
+            "total": fmt_reais(x.get("total", 0)),
+        })
     return {
         "pedido_id": p["id"],
         "numero": p.get("numero"),
-        "insumo_id": p.get("insumo_id"),
         "status": p.get("status"),
         "fornecedor": p.get("fornecedor"),
-        "quantidade_milesimos": p.get("quantidade"),
-        "quantidade": fmt_qtd(p.get("quantidade", 0)),
         "valor_centavos": p.get("valor"),
         "valor": fmt_reais(p.get("valor", 0)),
         "previsao": p.get("previsao"),
-        # só depois de conferido: o que chegou de fato (pode diferir do pedido) e a NF
-        "quantidade_recebida_milesimos": p.get("quantidade_recebida"),
-        "nf": p.get("nf"),
+        "entregas": p.get("recebimentos", 0),
+        "linhas": linhas,
     }
+
+
+def _pct(c: int | None) -> str | None:
+    return None if c is None else f"{c / 100:.1f}".replace(".", ",") + "%"
+
+
+def _meses(decimos: int | None) -> str | None:
+    if decimos is None:
+        return None
+    if decimos == 0:
+        return "em dia"
+    n = abs(decimos) / 10
+    t = (f"{n:.1f}".replace(".", ",") if decimos % 10 else f"{n:.0f}") + (" mês" if n <= 1 else " meses")
+    return f"{t} de atraso" if decimos > 0 else f"adiantada {t}"
 
 
 def _ler_qtd(texto: str, campo: str) -> int:
@@ -152,7 +189,7 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
 
     @beta_async_tool(eager_input_streaming=True)
     async def listar_obras() -> str:
-        """Lista as obras que a pessoa pode ver, com id, nome, cidade, status e verba.
+        """Lista as obras que a pessoa pode ver, com id, nome, cidade, status, valor do contrato e prazo.
 
         Use para descobrir o obra_id quando a pessoa citar a obra pelo nome ou não houver obra em foco.
         Não use para estoque ou pedidos: para isso há consultar_estoque e listar_pedidos.
@@ -168,8 +205,11 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
                 "nome": o.get("nome"),
                 "cidade": o.get("cidade"),
                 "status": o.get("status"),
-                "verba_centavos": o.get("verba", 0),
-                "verba": fmt_reais(o.get("verba", 0)),
+                "numero_contrato": o.get("numero_contrato") or None,
+                "valor_do_contrato_centavos": o.get("verba", 0),
+                "valor_do_contrato": fmt_reais(o.get("verba", 0)),
+                "inicio": o.get("inicio"),
+                "prazo_meses": o.get("prazo_meses") or None,
             }
             for o in obras
         ])
@@ -219,6 +259,7 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
                 "quantidade_milesimos": m.get("quantidade"),
                 "quantidade": fmt_qtd(m.get("quantidade", 0)),
                 "destino": m.get("destino"),
+                "etapa": m.get("etapa"),
                 "origem_doc": m.get("origem_doc"),
                 "quem": m.get("quem"),
                 "origem": m.get("origem"),
@@ -229,10 +270,12 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
 
     @beta_async_tool(eager_input_streaming=True)
     async def listar_pedidos(obra_id: str, status: StatusTexto | None = None) -> str:
-        """Lista os pedidos de compra de uma obra com número (PED-NNNN), status, fornecedor, quantidade e valor.
+        """Lista os pedidos de compra de uma obra: número (PED-NNNN), status, fornecedor, previsão, valor e as linhas
+        (insumo, etapa do orçamento, quantidade pedida, recebida e o que falta entregar).
 
-        Use para "o que está a caminho", "o pedido do aço já chegou?", ou para achar o pedido_id antes de propor um
-        avanço. Não use para a falta de material: consultar_estoque já desconta o que está pedido.
+        Use para "o que está a caminho", "o pedido do aço já chegou?", "falta chegar brita?", ou para achar o pedido_id
+        antes de propor um avanço. Status "parcial" = chegou parte, o resto continua a caminho. Não use para a falta de
+        material: consultar_estoque já desconta o que está pedido.
 
         Args:
             obra_id: ID da obra.
@@ -247,7 +290,8 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
 
     @beta_async_tool(eager_input_streaming=True)
     async def propor_pedido(
-        obra_id: str, insumo_id: str, quantidade: str, fornecedor: str, valor: str, justificativa: str
+        obra_id: str, insumo_id: str, quantidade: str, fornecedor: str, valor: str, justificativa: str,
+        etapa: str | None = None, previsao: str | None = None,
     ) -> str:
         """Propõe um pedido de compra. NÃO compra: cria uma proposta que uma pessoa aprova ou recusa na tela.
 
@@ -263,6 +307,9 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             fornecedor: Nome do fornecedor, como a pessoa disse.
             valor: Valor total do pedido em reais, como a pessoa disse: "4720", "4.720,00", "1299,90".
             justificativa: Uma frase com o motivo (ex.: "repor a falta de aço para a laje do 2º pavimento").
+            etapa: Etapa do orçamento que paga a compra (a chave, ex.: "3"; de consultar_orcamento). Se a obra tem
+                orçamento e a pessoa não disse a etapa, pergunte. Omita só se a obra não tiver orçamento.
+            previsao: Data prevista de entrega "AAAA-MM-DD", se a pessoa disse.
         """
         eventos.ferramenta("propor_pedido", "preparou uma proposta de pedido")
         q, v = _ler_qtd(quantidade, "quantidade"), _ler_reais(valor)
@@ -270,14 +317,31 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             raise ToolError("Quantidade e valor têm de ser maiores que zero.")
         item = await _item_do_insumo(obra_id, insumo_id)
         un = item["insumo"].get("unidade", "")
+        try:
+            etapas = {e["etapa"]: e["descricao"] for e in await api.etapas(obra_id)}
+        except ErroApi as e:
+            raise _erro(e) from None
+        etapa = (etapa or "").strip() or None
+        if etapa and etapa not in etapas:
+            raise ToolError(f"A etapa {etapa} não existe no orçamento. Etapas: "
+                            + "; ".join(f"{k} {v}" for k, v in etapas.items()))
+        if etapas and not etapa:
+            raise ToolError("Esta obra tem orçamento: diga de qual etapa é a compra (pergunte à pessoa se não souber). "
+                            "Etapas: " + "; ".join(f"{k} {v}" for k, v in etapas.items()))
+        dados: dict[str, Any] = {"insumo_id": insumo_id, "quantidade": q, "fornecedor": fornecedor, "valor": v}
+        if etapa:
+            dados["etapa"] = etapa
+        if previsao:
+            dados["previsao"] = previsao.strip()
         return await _propor({
             "obra_id": obra_id,
             "tipo": "criar_pedido",
-            "titulo": f"Comprar {_qtd_un(q, un)} de {item['insumo']['nome']} de {fornecedor} por {fmt_reais(v)}",
+            "titulo": f"Comprar {_qtd_un(q, un)} de {item['insumo']['nome']} de {fornecedor} por {fmt_reais(v)}"
+                      + (f" · etapa {etapa} {etapas[etapa]}" if etapa else ""),
             "justificativa": justificativa,
             "conta": linha_de_conta(item["conta"], un),
             "fonte": "almoxarifado da obra (conta calculada pelo sistema)",
-            "dados": {"insumo_id": insumo_id, "quantidade": q, "fornecedor": fornecedor, "valor": v},
+            "dados": dados,
         })
 
     @beta_async_tool(eager_input_streaming=True)
@@ -290,7 +354,8 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         Use quando a pessoa disser que o pedido foi aprovado, enviado, chegou, foi conferido ou deve ser cancelado.
         Ir para "conferido" dá entrada no almoxarifado quando aprovado. Ache o pedido_id com listar_pedidos antes.
         Ao conferir, se a pessoa disser que chegou quantidade diferente da pedida, informe quantidade_recebida (entra
-        o que chegou; a diferença volta a aparecer como falta). Se ela disser o número da nota, informe nf.
+        o que chegou; o resto continua a caminho, status parcial). Se ela disser o número da nota, informe nf. Pedido
+        "parcial" → "conferido" = encerrar o resto, quando o fornecedor não vai mandar.
 
         Args:
             obra_id: ID da obra do pedido.
@@ -319,10 +384,17 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             validar_transicao(StatusPedido(pedido["status"]), StatusPedido(para))
         except RegraViolada as e:
             raise ToolError(str(e)) from None
+        linhas = _linhas(pedido)
+        if q is not None and len(linhas) > 1:
+            raise ToolError(f"{pedido.get('numero')} tem {len(linhas)} linhas: a entrega parcial de cada linha é "
+                            "registrada na tela (Suprimentos → pedido → Registrar entrega). Oriente a pessoa.")
         titulo = f"{pedido.get('numero')}: {pedido['status']} → {para}"
-        if q is not None and q != pedido.get("quantidade"):
-            un = (await _item_do_insumo(obra_id, pedido["insumo_id"]))["insumo"].get("unidade", "")
-            titulo += f" · chegaram {fmt_qtd(q)} de {_qtd_un(pedido.get('quantidade', 0), un)}"
+        if pedido["status"] == "parcial" and para == "conferido":
+            titulo = f"{pedido.get('numero')}: encerrar o resto (o fornecedor não manda)"
+        if q is not None and q != linhas[0].get("quantidade"):
+            un = linhas[0].get("unidade") or (await _item_do_insumo(obra_id, linhas[0]["insumo_id"]))["insumo"].get(
+                "unidade", "")
+            titulo += f" · chegaram {fmt_qtd(q)} de {_qtd_un(linhas[0].get('quantidade', 0), un)}"
         if nf:
             titulo += f" (NF {nf})"
         dados: dict[str, Any] = {"pedido_id": pedido_id, "para": para}
@@ -371,11 +443,142 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             "dados": {"insumo_id": insumo_id, "quantidade": q, "motivo": motivo},
         })
 
+    @beta_async_tool(eager_input_streaming=True)
+    async def consultar_orcamento(obra_id: str, busca: str | None = None) -> str:
+        """Mostra o orçamento da obra e o previsto × realizado por etapa, com as contas já feitas pelo sistema.
+
+        Traz: valor do contrato, aditivos (total, % sobre o contrato, cada aditivo com nº, descrição e data), orçado
+        atual, e por etapa: orçado, em cotação, comprometido (pedidos), realizado (compras e serviços recebidos) e saldo
+        a comprometer. Use para "quanto custou o aditivo", "a fundação estourou?", "quanto já gastamos", e para achar a
+        chave da etapa antes de propor um pedido. Orçado é preço de contrato (com BDI e mão de obra); realizado é custo
+        de compra, então realizado não é o % executado (para isso, consultar_cronograma).
+
+        Args:
+            obra_id: ID da obra.
+            busca: Parte da descrição de um serviço do orçamento (ex.: "tapume") para listar os itens que batem.
+        """
+        eventos.ferramenta("consultar_orcamento", f"consultou o orçamento{f' (busca: {busca})' if busca else ''}")
+        try:
+            o = await api.orcamento(obra_id)
+        except ErroApi as e:
+            raise _erro(e) from None
+        t = o["totais"]
+        contrato = next((v for v in o["versoes"] if v["ativa"] and v["tipo"] == "contrato"), None)
+        aditivos = [v for v in o["versoes"] if v["ativa"] and v["tipo"] == "aditivo"]
+        saida: dict[str, Any] = {
+            "obra_id": obra_id,
+            "fonte": "orçamento da obra (versões vigentes) e pedidos",
+            "tem_orcamento": contrato is not None,
+            "contratado": fmt_reais(t["contratado"]),
+            "aditivos": fmt_reais(t["aditivos"]),
+            "aditivos_pct_sobre_contrato": _pct(round(t["aditivos"] * 10000 / t["contratado"]))
+            if t["contratado"] else None,
+            "orcado_atual": fmt_reais(t["atual"]),
+            "em_cotacao": fmt_reais(t["cotando"]),
+            "comprometido": fmt_reais(t["comprometido"]),
+            "realizado_compras": fmt_reais(t["realizado"]),
+            "saldo_a_comprometer": fmt_reais(t["atual"] - t["comprometido"]),
+            "lista_aditivos": [{"numero": v["numero"], "descricao": v.get("descricao"), "data": v.get("data"),
+                                "valor": fmt_reais(v["total"]), "itens": v["itens"]} for v in aditivos],
+            "etapas": [{
+                "etapa": e["etapa"], "descricao": e["descricao"], "orcado_atual": fmt_reais(e["atual"]),
+                "aditivos": fmt_reais(e["aditivos"]), "em_cotacao": fmt_reais(e["cotando"]),
+                "comprometido": fmt_reais(e["comprometido"]), "realizado_compras": fmt_reais(e["realizado"]),
+                "saldo": fmt_reais(e["atual"] - e["comprometido"]),
+                "estourou": e["comprometido"] > e["atual"],
+            } for e in o["etapas"]],
+        }
+        if t["sem_etapa"]["comprometido"] or t["sem_etapa"]["cotando"]:
+            saida["sem_etapa"] = {"comprometido": fmt_reais(t["sem_etapa"]["comprometido"]),
+                                  "realizado_compras": fmt_reais(t["sem_etapa"]["realizado"])}
+        if busca:
+            alvo = _sem_acento(busca)
+            achados = [x for x in o["itens"] if x["tipo"] == "item" and alvo in _sem_acento(x["descricao"])]
+            saida["itens_encontrados"] = [{
+                "numero": x["numero"], "etapa": x["etapa"], "codigo": x.get("codigo"), "fonte": x.get("fonte"),
+                "descricao": x["descricao"], "quantidade": _qtd_un(x["quantidade"], x["unidade"]),
+                "valor_unitario": fmt_reais(x["valor_unitario"]), "total": fmt_reais(x["total"]),
+                "versao": "aditivo" if any(v["id"] == x["versao_id"] for v in aditivos) else "contrato",
+            } for x in achados[:30]]
+            if len(achados) > 30:
+                saida["itens_encontrados_total"] = len(achados)
+        return _json(saida)
+
+    @beta_async_tool(eager_input_streaming=True)
+    async def consultar_cronograma(obra_id: str) -> str:
+        """Mostra o cronograma físico-financeiro, as medições e o prazo projetado, com as contas feitas pelo sistema.
+
+        Traz: término contratual e projetado, atraso contra o cronograma atual e contra o original (linha de base, que
+        a reprogramação não apaga), % previsto × % medido na última medição, previsto e medido por mês e as medições.
+        Use para "a obra fecha no prazo?", "estamos atrasados?", "quanto foi medido?". Se a obra foi reprogramada, o
+        atraso que importa para o contrato é o contra o original; diga os dois.
+
+        Args:
+            obra_id: ID da obra.
+        """
+        eventos.ferramenta("consultar_cronograma", "consultou o cronograma e as medições")
+        try:
+            c = await api.cronograma(obra_id)
+        except ErroApi as e:
+            raise _erro(e) from None
+        p = c["prazo"]
+        if not c.get("inicio"):
+            return _json({"obra_id": obra_id, "tem_cronograma": False,
+                          "termino_contratual": p.get("termino_contratual"),
+                          "aviso": "A obra ainda não tem cronograma no sistema: não há como projetar o prazo."})
+        return _json({
+            "obra_id": obra_id,
+            "fonte": "cronograma físico-financeiro e medições da obra",
+            "tem_cronograma": True,
+            "inicio": c["inicio"], "meses": c["meses"],
+            "termino_contratual": p.get("termino_contratual"),
+            "termino_projetado": p.get("termino_projetado"),
+            "situacao_contra_cronograma_atual": _meses(p.get("atraso_decimos")),
+            "reprogramacoes": c.get("revisoes", 0),
+            "cronograma_original": c.get("base"),
+            "termino_original": p.get("termino_base"),
+            "situacao_contra_original": _meses(p.get("atraso_base_decimos")),
+            "mes_da_ultima_medicao": p.get("mes_referencia"),
+            "pct_previsto_na_medicao": _pct(p.get("pct_previsto_na_medicao")),
+            "pct_medido": _pct(p.get("pct_medido")),
+            "sem_medicao": not c["medicoes"],
+            "mensal": [{"mes": m["mes"], "previsto": fmt_reais(m["previsto"]),
+                        "pct_previsto_acumulado": _pct(m["pct_previsto_acumulado"]),
+                        "medido": None if m["medido"] is None else fmt_reais(m["medido"]),
+                        "pct_medido_acumulado": _pct(m["pct_medido_acumulado"])} for m in c["mensal"]],
+            "medicoes": [{"numero": m["numero"], "mes": m["mes"], "valor": fmt_reais(m["valor"]),
+                          "pct_obra_acumulado": _pct(m["pct_obra_acumulado"]), "observacao": m.get("observacao")}
+                         for m in c["medicoes"]],
+        })
+
+    @beta_async_tool(eager_input_streaming=True)
+    async def listar_fornecedores(busca: str | None = None) -> str:
+        """Lista os fornecedores cadastrados (valem para todas as obras), com CNPJ, contato e telefone.
+
+        Use para achar o nome certo do fornecedor antes de propor um pedido, ou quando perguntarem o contato dele.
+
+        Args:
+            busca: Parte do nome para filtrar. Omita para todos.
+        """
+        eventos.ferramenta("listar_fornecedores", "consultou os fornecedores")
+        try:
+            fs = await api.fornecedores()
+        except ErroApi as e:
+            raise _erro(e) from None
+        if busca:
+            alvo = _sem_acento(busca)
+            fs = [f for f in fs if alvo in _sem_acento(f["nome"])]
+        return _json([{"nome": f["nome"], "cnpj": f.get("cnpj") or None, "contato": f.get("contato") or None,
+                       "telefone": f.get("telefone") or None, "email": f.get("email") or None} for f in fs])
+
     return [
         listar_obras,
         consultar_estoque,
         historico_movimentos,
         listar_pedidos,
+        consultar_orcamento,
+        consultar_cronograma,
+        listar_fornecedores,
         propor_pedido,
         propor_avanco_pedido,
         propor_ajuste_estoque,

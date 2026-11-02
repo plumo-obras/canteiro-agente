@@ -5,6 +5,7 @@ from falsos import ACO, OBRA, PED_ACO, PED_CIMENTO, TOKEN_SERVICO, TOKEN_USUARIO
 
 FERRAMENTAS = {
     "listar_obras", "consultar_estoque", "historico_movimentos", "listar_pedidos",
+    "consultar_orcamento", "consultar_cronograma", "listar_fornecedores",
     "propor_pedido", "propor_avanco_pedido", "propor_ajuste_estoque",
 }
 

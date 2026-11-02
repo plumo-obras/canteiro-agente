@@ -114,6 +114,20 @@ class ApiFalsa:
         if caminho == f"/obras/{OBRA}/pedidos":
             status = req.url.params.get("status")
             return httpx.Response(200, json=[p for p in self._pedidos() if not status or p["status"] == status])
+        if caminho == f"/obras/{OBRA_EMEI}/orcamento":
+            return httpx.Response(200, json=ORCAMENTO_EMEI)
+        if caminho == f"/obras/{OBRA_EMEI}/cronograma":
+            return httpx.Response(200, json=CRONOGRAMA_EMEI)
+        if caminho == f"/obras/{OBRA_EMEI}/etapas":
+            return httpx.Response(200, json=[{"etapa": "1", "descricao": "SERVIÇOS PRELIMINARES"},
+                                             {"etapa": "3", "descricao": "FUNDAÇÕES"}])
+        if caminho == f"/obras/{OBRA_EMEI}/insumos":
+            return httpx.Response(200, json=self._insumos())
+        if caminho == "/fornecedores":
+            return httpx.Response(200, json=[{"id": "f1", "nome": "Depósito São Jorge", "cnpj": "11222333000181",
+                                              "contato": "Jorge", "telefone": "51 9999", "email": ""}])
+        if caminho == f"/obras/{OBRA}/etapas":
+            return httpx.Response(200, json=[])          # a Vila Nova da demonstração não tem orçamento em etapas
         if caminho == "/propostas" and m == "POST":
             return httpx.Response(201, json={"id": "proposta-1", "tenant_id": "t1", "status": "pendente",
                                              "sugerido_por": "agente", **corpo})
@@ -191,3 +205,37 @@ class AnthropicFalsa:
             api_key=chave, max_retries=0,
             http_client=DefaultAsyncHttpxClient(transport=httpx2.MockTransport(self)),
         )
+
+
+OBRA_EMEI = "obra-emei"
+_ETAPA = lambda e, d, c, a, cot, comp, real: {"etapa": e, "descricao": d, "contratado": c, "aditivos": a,  # noqa: E731
+                                             "atual": c + a, "cotando": cot, "comprometido": comp, "realizado": real}
+ORCAMENTO_EMEI = {
+    "versoes": [
+        {"id": "v-adit", "tipo": "aditivo", "ativa": True, "numero": 1, "descricao": "Aterro, tapume e aço",
+         "data": "2026-11-20", "total": 5983180, "itens": 5},
+        {"id": "v-cont", "tipo": "contrato", "ativa": True, "numero": 0, "descricao": "", "data": None,
+         "total": 203500158, "itens": 491},
+    ],
+    "itens": [{"tipo": "item", "numero": "1.2", "etapa": "1", "codigo": "74220/1", "fonte": "SINAPI",
+               "descricao": "Tapume de chapa de madeira", "quantidade": 88000, "unidade": "m²",
+               "valor_unitario": 4523, "total": 398024, "versao_id": "v-cont"},
+              {"tipo": "item", "numero": "A1.2", "etapa": "1", "codigo": "74220/1", "fonte": "SINAPI",
+               "descricao": "Tapume de chapa de madeira", "quantidade": 348000, "unidade": "m²",
+               "valor_unitario": 4523, "total": 1574004, "versao_id": "v-adit"}],
+    "etapas": [_ETAPA("1", "SERVIÇOS PRELIMINARES", 6117367, 2035614, 0, 0, 0),
+               _ETAPA("3", "FUNDAÇÕES", 10588514, 1036168, 0, 2425000, 2334000)],
+    "totais": {"contratado": 203500158, "aditivos": 5983180, "atual": 209483338, "n_itens": 496, "n_etapas": 24,
+               "cotando": 0, "comprometido": 2425000, "realizado": 2334000,
+               "sem_etapa": {"cotando": 0, "comprometido": 0, "realizado": 0}},
+}
+CRONOGRAMA_EMEI = {
+    "inicio": "2026-11", "meses": 11, "base": {"inicio": "2026-11", "meses": 10}, "revisoes": 1,
+    "etapas": [], "medicoes": [{"numero": 1, "mes": "2026-11", "valor": 7876733, "pct_obra_acumulado": 376,
+                                "observacao": ""}],
+    "mensal": [{"mes": "2026-11", "previsto": 8505000, "previsto_acumulado": 8505000, "pct_previsto_acumulado": 406,
+                "medido": 7876733, "medido_acumulado": 7876733, "pct_medido_acumulado": 376, "pct_base_acumulado": 406}],
+    "prazo": {"termino_contratual": "2027-09", "termino_projetado": "2027-09", "atraso_meses": 0, "atraso_decimos": 0,
+              "pct_previsto_na_medicao": 406, "pct_medido": 376, "mes_referencia": "2026-11",
+              "termino_base": "2027-08", "atraso_base_meses": 1, "atraso_base_decimos": 5},
+}
