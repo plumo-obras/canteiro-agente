@@ -1,0 +1,33 @@
+# CI do agente. O Render só publica quando estes checks passam (render.yaml: autoDeployTrigger: checksPass).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  agente:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: testes do agente (sem tokens; o teste com modelo real fica pulado)
+        run: |
+          uv venv -p 3.14 .venv
+          uv pip install -p .venv -e ".[dev]"
+          .venv/bin/pytest -q
+
+  imagem:
+    # Garante que o Dockerfile que o Render usa continua compilando.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t canteiro-agente .

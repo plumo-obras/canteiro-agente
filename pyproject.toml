@@ -16,7 +16,8 @@ dependencies = [
 dev = ["pytest>=8", "pytest-asyncio>=1.2"]
 
 [tool.uv.sources]
-canteiro-dominio = { path = "../../packages/dominio", editable = true }
+# o domínio mora no canteiro-api; versão fixa por tag (para usar uma cópia local: ver README)
+canteiro-dominio = { git = "https://github.com/plumo-obras/canteiro-api", tag = "dominio-v0.1.0", subdirectory = "dominio" }
 
 [build-system]
 requires = ["hatchling"]

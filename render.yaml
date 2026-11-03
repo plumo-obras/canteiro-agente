@@ -1,0 +1,22 @@
+# Render (plano gratuito): o serviço do agente. A API tem o próprio render.yaml no canteiro-api; a web fica na Vercel.
+# O serviço gratuito dorme após 15 min sem uso e leva ~30–60 s para acordar.
+# Segredos: sync:false = preencha no painel do Render. Nunca coloque valor aqui (o repositório é público).
+services:
+  - type: web
+    name: canteiro-agente
+    runtime: docker
+    plan: free
+    region: virginia
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /saude
+    autoDeployTrigger: checksPass   # só publica depois que o CI do GitHub (.github/workflows/ci.yml) passar
+    envVars:
+      - key: API_URL              # URL pública do canteiro-api (https://canteiro-api.onrender.com)
+        sync: false
+      - key: TOKEN_SERVICO_AGENTE
+        sync: false
+      - key: MODELO_ROTEIRO       # 1 = demo sem chave (modelo de roteiro, 0 tokens). Para o Claude: 0 + ANTHROPIC_API_KEY
+        value: "1"
+      - key: ANTHROPIC_API_KEY
+        sync: false

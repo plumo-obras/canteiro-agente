@@ -1,14 +1,23 @@
 # canteiro-agente
 
 Serviço do agente: `POST /conversa` em SSE, ferramentas que chamam a API central com o token do usuário e só
-propõem escrita. Contrato: `docs/contrato.md`.
+propõem escrita. Contrato: [`docs/contrato.md`](https://github.com/plumo-obras/canteiro-api/blob/main/docs/contrato.md) no canteiro-api.
 
 ```bash
-uv venv -p 3.14 .venv && uv pip install -p .venv -e ".[dev]"
-set -a && . ../../.env && set +a          # API_URL, ANTHROPIC_API_KEY, TOKEN_SERVICO_AGENTE
+uv venv -p 3.14 .venv && uv pip install -p .venv -e ".[dev]"   # o domínio vem do canteiro-api, pela tag
+cp .env.exemplo .env && set -a && . ./.env && set +a              # API_URL, TOKEN_SERVICO_AGENTE, ANTHROPIC_API_KEY
 .venv/bin/uvicorn canteiro_agente.main:app --reload --port 8100
 .venv/bin/pytest                          # sem rede e sem gastar token
 ```
+
+Mexendo no domínio ao mesmo tempo (canteiro-api clonado ao lado), use a cópia local no lugar da tag:
+
+```bash
+uv pip install -p .venv --no-sources -e ../canteiro-api/dominio -e ".[dev]"
+```
+
+Em contêiner: `docker build -t canteiro-agente . && docker run --env-file .env -p 8100:8100 canteiro-agente`. O produto
+inteiro sobe pelo `docker-compose.completo.yml` do canteiro-api.
 
 ## Ponta a ponta sem gastar token: o modelo de roteiro
 
