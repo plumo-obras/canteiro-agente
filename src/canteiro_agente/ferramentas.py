@@ -9,6 +9,7 @@ sempre os mesmos bytes: é isso que mantém o cache do prefixo (ferramentas + in
 """
 import json
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -19,7 +20,7 @@ from canteiro_dominio.modelos import StatusPedido
 from canteiro_dominio.regras import RegraViolada, validar_conferencia, validar_transicao
 from canteiro_dominio.tipos import fmt_qtd, fmt_reais, qtd, reais
 
-from .api_central import ApiCentral, ErroApi
+from .api_central import ApiCentral, ApiForaDoAr, ErroApi
 
 Nivel = Literal["consulta", "propoe"]
 NIVEIS: dict[str, Nivel] = {
@@ -41,18 +42,53 @@ StatusTexto = Literal["em_cotacao", "aprovado", "enviado", "em_transito", "receb
 
 @dataclass
 class Eventos:
-    """Fila do que as ferramentas querem mostrar na tela (eventos `ferramenta` e `proposta` do SSE)."""
+    """O que as ferramentas querem mostrar na tela (eventos `ferramenta` e `proposta` do SSE) e o contexto da volta
+    que elas não recebem do SDK (sessão e id da chamada).
+
+    Com `emitir`, o evento sai na hora: o `ferramenta` é anunciado quando a ferramenta COMEÇA, e a tela mostra o que
+    está em andamento durante uma consulta lenta, em vez de só depois que ela acaba. Sem `emitir` (testes de
+    ferramenta), os eventos ficam em `pendentes`.
+    """
+    emitir: Callable[[tuple[str, dict[str, Any]]], None] | None = None
     pendentes: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    sessao_id: str | None = None
+    # (nome, tool_use id, entrada) das chamadas da resposta em execução, na ordem do modelo
+    chamadas: list[tuple[str, str, Any]] = field(default_factory=list)
+    chamada_atual: str | None = None
+
+    def _enviar(self, evento: tuple[str, dict[str, Any]]) -> None:
+        if self.emitir is not None:
+            self.emitir(evento)
+        else:
+            self.pendentes.append(evento)
 
     def ferramenta(self, nome: str, resumo: str) -> None:
-        self.pendentes.append(("ferramenta", {"nome": nome, "nivel": NIVEIS[nome], "resumo": resumo}))
+        self._enviar(("ferramenta", {"nome": nome, "nivel": NIVEIS[nome], "resumo": resumo}))
 
     def proposta(self, proposta: dict[str, Any]) -> None:
-        self.pendentes.append(("proposta", proposta))
+        self._enviar(("proposta", proposta))
 
     def esvaziar(self) -> list[tuple[str, dict[str, Any]]]:
         saida, self.pendentes = self.pendentes, []
         return saida
+
+    def nova_resposta(self, blocos: list[Any]) -> None:
+        self.chamadas = [(b.name, b.id, b.input) for b in blocos if getattr(b, "type", None) == "tool_use"]
+
+    def tomar_chamada(self, nome: str, entrada: Any) -> str | None:
+        """O id do tool_use desta execução. O SDK passa só a entrada à ferramenta; casar por nome + entrada exata (e
+        consumir) acerta mesmo com duas chamadas da mesma ferramenta na mesma resposta."""
+        for i, (n, id_, e) in enumerate(self.chamadas):
+            if n == nome and e == entrada:
+                del self.chamadas[i]
+                return id_
+        return None
+
+    def chave_idempotencia(self) -> str | None:
+        # (sessão, tool_use): repetir a MESMA chamada nunca cria duas propostas; outra chamada é outra chave
+        if self.sessao_id and self.chamada_atual:
+            return f"{self.sessao_id}:{self.chamada_atual}"
+        return None
 
 
 def _json(dado: Any) -> str:
@@ -64,6 +100,9 @@ def _sem_acento(t: str) -> str:
 
 
 def _erro(e: ErroApi) -> ToolError:
+    if isinstance(e, ApiForaDoAr):
+        # A volta para logo depois desta rodada (conversa.py lê ApiCentral.fora_do_ar); o texto fica no histórico.
+        return ToolError("O sistema está fora do ar: a consulta não foi feita. Não tente de novo agora.")
     if e.status in (401, 403):
         return ToolError(f"Sem permissão para isso (HTTP {e.status}): {e.mensagem}")
     if e.status == 404:
@@ -110,18 +149,21 @@ def _pedido(p: dict[str, Any]) -> dict[str, Any]:
     linhas = []
     for x in _linhas(p):
         un = x.get("unidade", "")
-        falta = max(0, x.get("quantidade", 0) - x.get("recebida", 0))
-        linhas.append({
+        linha = {
             "insumo_id": x.get("insumo_id"),
             "nome": x.get("nome"),
             "tipo": x.get("tipo", "material"),
             "etapa": x.get("etapa"),
             "quantidade": _qtd_un(x.get("quantidade", 0), un),
             "recebida": _qtd_un(x.get("recebida", 0), un),
-            "falta_entregar": _qtd_un(falta, un),
-            "falta_entregar_milesimos": falta,
             "total": fmt_reais(x.get("total", 0)),
-        })
+        }
+        # A conta é da API (regras.falta_na_linha; 0 em pedido encerrado). Sem ela, o modelo fica sem o número em vez
+        # de ganhar uma subtração feita aqui.
+        falta = x.get("falta_entregar")
+        if falta is not None:
+            linha |= {"falta_entregar": _qtd_un(falta, un), "falta_entregar_milesimos": falta}
+        linhas.append(linha)
     return {
         "pedido_id": p["id"],
         "numero": p.get("numero"),
@@ -137,6 +179,10 @@ def _pedido(p: dict[str, Any]) -> dict[str, Any]:
 
 def _pct(c: int | None) -> str | None:
     return None if c is None else f"{c / 100:.1f}".replace(".", ",") + "%"
+
+
+def _reais_ou_none(c: int | None) -> str | None:
+    return None if c is None else fmt_reais(c)
 
 
 def _meses(decimos: int | None) -> str | None:
@@ -175,17 +221,43 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         raise ToolError("Esse insumo não existe nesta obra. Use consultar_estoque para achar o insumo_id certo.")
 
     async def _propor(corpo: dict[str, Any]) -> str:
+        chave = eventos.chave_idempotencia()
+        if chave:
+            corpo = {**corpo, "chave_idempotencia": chave}
         try:
             proposta = await api.criar_proposta(corpo)
         except ErroApi as e:
             raise _erro(e) from None
         eventos.proposta(proposta)
+        if proposta.get("ja_existia"):
+            status = proposta.get("status", "pendente")
+            aviso = ("Já havia uma proposta igual aguardando aprovação; nada novo foi criado. Diga à pessoa que ela "
+                     "já está esperando a aprovação." if status == "pendente"
+                     else f"Esta proposta já tinha sido criada e agora está {status}; nada novo foi criado.")
+        else:
+            aviso = "Proposta criada e aguardando aprovação de uma pessoa. Nada foi executado ainda."
         return _json({
             "proposta_id": proposta.get("id"),
             "status": proposta.get("status", "pendente"),
             "titulo": proposta.get("titulo"),
-            "aviso": "Proposta criada e aguardando aprovação de uma pessoa. Nada foi executado ainda.",
+            "ja_existia": bool(proposta.get("ja_existia")),
+            "aviso": aviso,
         })
+
+    def _com_chamada(ferramenta):
+        """O SDK chama `ferramenta.call(entrada)` sem o id do tool_use; aqui ele é achado antes da chamada (mesmo que a
+        entrada não valide e a função nem rode) para a proposta levar a chave de idempotência."""
+        original = ferramenta.call
+
+        async def call(entrada: object):
+            eventos.chamada_atual = eventos.tomar_chamada(ferramenta.name, entrada)
+            try:
+                return await original(entrada)
+            finally:
+                eventos.chamada_atual = None
+
+        ferramenta.call = call
+        return ferramenta
 
     @beta_async_tool(eager_input_streaming=True)
     async def listar_obras() -> str:
@@ -466,27 +538,27 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         t = o["totais"]
         contrato = next((v for v in o["versoes"] if v["ativa"] and v["tipo"] == "contrato"), None)
         aditivos = [v for v in o["versoes"] if v["ativa"] and v["tipo"] == "aditivo"]
+        # Saldo, estouro e % do aditivo vêm prontos da API: aqui só se formata o que chegou.
         saida: dict[str, Any] = {
             "obra_id": obra_id,
             "fonte": "orçamento da obra (versões vigentes) e pedidos",
             "tem_orcamento": contrato is not None,
             "contratado": fmt_reais(t["contratado"]),
             "aditivos": fmt_reais(t["aditivos"]),
-            "aditivos_pct_sobre_contrato": _pct(round(t["aditivos"] * 10000 / t["contratado"]))
-            if t["contratado"] else None,
+            "aditivos_pct_sobre_contrato": _pct(t.get("aditivos_pct")),
             "orcado_atual": fmt_reais(t["atual"]),
             "em_cotacao": fmt_reais(t["cotando"]),
             "comprometido": fmt_reais(t["comprometido"]),
             "realizado_compras": fmt_reais(t["realizado"]),
-            "saldo_a_comprometer": fmt_reais(t["atual"] - t["comprometido"]),
+            "saldo_a_comprometer": _reais_ou_none(t.get("saldo")),
             "lista_aditivos": [{"numero": v["numero"], "descricao": v.get("descricao"), "data": v.get("data"),
                                 "valor": fmt_reais(v["total"]), "itens": v["itens"]} for v in aditivos],
             "etapas": [{
                 "etapa": e["etapa"], "descricao": e["descricao"], "orcado_atual": fmt_reais(e["atual"]),
                 "aditivos": fmt_reais(e["aditivos"]), "em_cotacao": fmt_reais(e["cotando"]),
                 "comprometido": fmt_reais(e["comprometido"]), "realizado_compras": fmt_reais(e["realizado"]),
-                "saldo": fmt_reais(e["atual"] - e["comprometido"]),
-                "estourou": e["comprometido"] > e["atual"],
+                "saldo": _reais_ou_none(e.get("saldo")),
+                "estourou": e.get("estourou"),
             } for e in o["etapas"]],
         }
         if t["sem_etapa"]["comprometido"] or t["sem_etapa"]["cotando"]:
@@ -580,7 +652,7 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         consultar_orcamento,
         consultar_cronograma,
         listar_fornecedores,
-        propor_pedido,
-        propor_avanco_pedido,
-        propor_ajuste_estoque,
+        _com_chamada(propor_pedido),
+        _com_chamada(propor_avanco_pedido),
+        _com_chamada(propor_ajuste_estoque),
     ]

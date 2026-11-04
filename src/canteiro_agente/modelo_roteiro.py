@@ -19,6 +19,7 @@ import argparse
 import json
 import re
 import unicodedata
+import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 from itertools import count
@@ -61,11 +62,12 @@ def lista(*itens: str) -> str:
     return "\n".join(f"- {i}" for i in itens)
 
 
-_ids = count(1)
 
 
 def ferramenta(nome: str, entrada: dict[str, Any], id_: str | None = None) -> dict[str, Any]:
-    return {"type": "tool_use", "id": id_ or f"toolu_roteiro_{next(_ids)}", "name": nome, "input": entrada}
+    # Único entre reinícios: o agente usa (sessão, id da chamada) como chave de idempotência da proposta, e um contador
+    # que volta a 1 repetiria a chave de uma proposta antiga da mesma conversa.
+    return {"type": "tool_use", "id": id_ or f"toolu_roteiro_{uuid.uuid4().hex[:16]}", "name": nome, "input": entrada}
 
 
 def _uso(r: Resposta) -> dict[str, int]:

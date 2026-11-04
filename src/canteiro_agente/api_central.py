@@ -21,6 +21,22 @@ class ErroApi(Exception):
         self.mensagem = mensagem
 
 
+FORA_DO_AR = "O sistema está fora do ar agora. Tente de novo em instantes."
+# O que o proxy da hospedagem responde enquanto a API está caída ou reiniciando. A API em si não usa nenhum deles.
+STATUS_FORA_DO_AR = frozenset({502, 503, 504})
+
+
+class ApiForaDoAr(ErroApi):
+    """A API não respondeu (conexão recusada, tempo esgotado) ou o proxy dela avisou que ela caiu.
+
+    É um `ErroApi` para as ferramentas tratarem no mesmo `except`; o `detalhe` (nome do erro de rede) é só para o
+    log. Ninguém mostra ao modelo o texto cru da exceção do httpx."""
+
+    def __init__(self, detalhe: str):
+        super().__init__(503, FORA_DO_AR)
+        self.detalhe = detalhe
+
+
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
@@ -53,11 +69,22 @@ class ApiCentral:
         self._http = http
         self._base = base_url.rstrip("/")
         self._autorizacao = autorizacao
+        # Uma instância por volta. Vira True na primeira falha de rede: a ferramenta devolve erro ao modelo (o SDK
+        # transforma qualquer exceção da ferramenta em tool_result), e a volta lê isto para parar em vez de pagar
+        # mais uma chamada ao modelo que só tentaria de novo contra a API caída.
+        self.fora_do_ar = False
 
     async def _req(self, metodo: str, caminho: str, **kw: Any) -> Any:
-        resp = await self._http.request(
-            metodo, self._base + caminho, headers={"Authorization": self._autorizacao}, **kw
-        )
+        try:
+            resp = await self._http.request(
+                metodo, self._base + caminho, headers={"Authorization": self._autorizacao}, **kw
+            )
+        except httpx.HTTPError as e:
+            self.fora_do_ar = True
+            raise ApiForaDoAr(type(e).__name__) from None
+        if resp.status_code in STATUS_FORA_DO_AR:
+            self.fora_do_ar = True
+            raise ApiForaDoAr(f"HTTP {resp.status_code}")
         if resp.status_code >= 400:
             raise ErroApi(resp.status_code, mensagem_de(resp))
         return resp.json() if resp.content else None

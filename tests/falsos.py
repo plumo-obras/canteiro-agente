@@ -53,6 +53,10 @@ class ApiFalsa:
     chamadas: list[Chamada] = field(default_factory=list)
     sessoes: dict[str, dict[str, Any]] = field(default_factory=dict)
     chave_cliente: str | None = None
+    propostas: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Simula a API caída: a partir de `fora_do_ar_depois` requisições de dado (fora /creditos e /sessoes), o
+    # transporte falha como um ConnectError (None = nunca).
+    fora_do_ar_depois: int | None = None
 
     def _insumos(self) -> list[dict[str, Any]]:
         def conta(precisa, saldo, a_caminho, cotando, falta):
@@ -77,10 +81,17 @@ class ApiFalsa:
                 m("entrada", 4_000_000, doc="NF 4471")]
 
     def _pedidos(self) -> list[dict[str, Any]]:
-        return [{"id": PED_ACO, "numero": "PED-0158", "obra_id": OBRA, "insumo_id": ACO, "quantidade": 3_200_000,
-                 "fornecedor": "Gerdau", "valor": 2_048_000, "status": "em_transito", "previsao": "2026-11-03"},
-                {"id": PED_CIMENTO, "numero": "PED-0160", "obra_id": OBRA, "insumo_id": CIMENTO, "quantidade": 120_000,
-                 "fornecedor": "Depósito São Jorge", "valor": 456_000, "status": "recebido", "previsao": "2026-11-01"}]
+        def linha(insumo, nome, un, q, total, recebida=0):
+            # falta_entregar: a conta da API (regras.falta_na_linha), que o agente só formata
+            return {"insumo_id": insumo, "nome": nome, "unidade": un, "tipo": "material", "etapa": None,
+                    "quantidade": q, "valor_unitario": 0, "total": total, "recebida": recebida,
+                    "falta_entregar": max(0, q - recebida)}
+        return [{"id": PED_ACO, "numero": "PED-0158", "obra_id": OBRA, "fornecedor": "Gerdau", "valor": 2_048_000,
+                 "status": "em_transito", "previsao": "2026-11-03", "recebimentos": 0,
+                 "linhas": [linha(ACO, "Aço CA-50", "kg", 3_200_000, 2_048_000)]},
+                {"id": PED_CIMENTO, "numero": "PED-0160", "obra_id": OBRA, "fornecedor": "Depósito São Jorge",
+                 "valor": 456_000, "status": "recebido", "previsao": "2026-11-01", "recebimentos": 0,
+                 "linhas": [linha(CIMENTO, "Cimento CP-II", "sc", 120_000, 456_000)]}]
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         corpo = json.loads(req.content) if req.content else None
@@ -98,6 +109,10 @@ class ApiFalsa:
         usuario = USUARIOS.get(req.headers.get("authorization", ""))
         if usuario is None:
             return httpx.Response(401, json={"detail": "token inválido"})
+        if self.fora_do_ar_depois is not None and caminho != "/creditos" and not caminho.startswith("/sessoes"):
+            if self.fora_do_ar_depois <= 0:
+                raise httpx.ConnectError("All connection attempts failed", request=req)
+            self.fora_do_ar_depois -= 1
         if caminho.startswith("/sessoes"):
             return self._sessoes(m, caminho, usuario, corpo, req.url.params)
         if caminho == "/creditos":
@@ -129,9 +144,22 @@ class ApiFalsa:
         if caminho == f"/obras/{OBRA}/etapas":
             return httpx.Response(200, json=[])          # a Vila Nova da demonstração não tem orçamento em etapas
         if caminho == "/propostas" and m == "POST":
-            return httpx.Response(201, json={"id": "proposta-1", "tenant_id": "t1", "status": "pendente",
-                                             "sugerido_por": "agente", **corpo})
+            return self._propor(corpo)
         return httpx.Response(404, json={"detail": f"rota falsa não conhece {m} {caminho}"})
+
+    def _propor(self, corpo: dict[str, Any]) -> httpx.Response:
+        """Como a API: a mesma chave devolve a mesma proposta; igual (obra, tipo, dados) pendente também."""
+        chave = corpo.get("chave_idempotencia")
+        corpo = {k: v for k, v in corpo.items() if k != "chave_idempotencia"}
+        id_ = f"proposta-{chave}" if chave else f"proposta-{len(self.propostas) + 1}"
+        existente = self.propostas.get(id_) or next(
+            (p for p in self.propostas.values() if p["status"] == "pendente"
+             and (p["obra_id"], p["tipo"], p["dados"]) == (corpo["obra_id"], corpo["tipo"], corpo["dados"])), None)
+        if existente:
+            return httpx.Response(200, json={**existente, "ja_existia": True})
+        p = self.propostas[id_] = {"id": id_, "tenant_id": "t1", "status": "pendente", "sugerido_por": "agente",
+                                   **corpo}
+        return httpx.Response(201, json={**p, "ja_existia": False})
 
     def _sessoes(self, m: str, caminho: str, usuario: str, corpo: Any, params: Any) -> httpx.Response:
         """Como a API: um documento por mensagem, só acrescenta, sessão de outra pessoa = 404."""
@@ -241,8 +269,10 @@ async def _corpo(partes: list[str | float]):
 
 
 OBRA_EMEI = "obra-emei"
+# saldo, estourou e aditivos_pct como a API calcula (servicos/versoes.py): o agente só os formata
 _ETAPA = lambda e, d, c, a, cot, comp, real: {"etapa": e, "descricao": d, "contratado": c, "aditivos": a,  # noqa: E731
-                                             "atual": c + a, "cotando": cot, "comprometido": comp, "realizado": real}
+                                             "atual": c + a, "cotando": cot, "comprometido": comp, "realizado": real,
+                                             "saldo": c + a - comp, "estourou": comp > c + a}
 ORCAMENTO_EMEI = {
     "versoes": [
         {"id": "v-adit", "tipo": "aditivo", "ativa": True, "numero": 1, "descricao": "Aterro, tapume e aço",
@@ -259,7 +289,8 @@ ORCAMENTO_EMEI = {
     "etapas": [_ETAPA("1", "SERVIÇOS PRELIMINARES", 6117367, 2035614, 0, 0, 0),
                _ETAPA("3", "FUNDAÇÕES", 10588514, 1036168, 0, 2425000, 2334000)],
     "totais": {"contratado": 203500158, "aditivos": 5983180, "atual": 209483338, "n_itens": 496, "n_etapas": 24,
-               "cotando": 0, "comprometido": 2425000, "realizado": 2334000,
+               "cotando": 0, "comprometido": 2425000, "realizado": 2334000, "saldo": 209483338 - 2425000,
+               "aditivos_pct": 294,
                "sem_etapa": {"cotando": 0, "comprometido": 0, "realizado": 0}},
 }
 CRONOGRAMA_EMEI = {

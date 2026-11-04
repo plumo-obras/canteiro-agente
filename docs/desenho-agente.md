@@ -24,7 +24,12 @@ o que pode propor, quanto custa e como sabemos se ficou bom. Código vem depois 
 - **Memória de curto prazo:** histórico em `sessoes`/`mensagens` na API, gravado a cada rodada; cache de prompt no
   prefixo fixo (ferramentas + instrução) e no histórico; limpeza de resultados antigos de ferramentas acima de 150 mil
   tokens (nunca dos `propor_*`).
-- **Propostas:** `criar_pedido`, `avancar_pedido`, `ajuste_estoque`.
+- **Propostas:** `criar_pedido`, `avancar_pedido`, `ajuste_estoque`. Sem duplicata: cada `propor_*` manda a chave
+  `"{sessao_id}:{tool_use_id}"`, e a API devolve a proposta pendente igual (mesma obra, tipo e dados) em vez de criar
+  outra (`ja_existia`).
+- **Falhas:** API central fora do ar no meio das ferramentas para a volta (aviso na tela, consumo gravado, sem nova
+  chamada ao modelo). Uma volta por sessão de cada vez (trava no processo: o agente roda numa instância só; com mais
+  de uma, o 409 da API na gravação do histórico é o que segura a ordem).
 - **Eventos de domínio:** a API grava na outbox `pedido.*`, `estoque.*`, `cronograma.salvo`, `medicao.criada`,
   `orcamento.*`, `proposta.*`, `registro.desfeito`, `obra.criada`. **Ninguém consome** (sem relay em produção).
 - **Modo roteiro** (`MODELO_ROTEIRO=1`): responde sem modelo, para demonstração; não grava uso.

@@ -8,8 +8,9 @@ from contextlib import asynccontextmanager
 
 import httpx
 from anthropic import AsyncAnthropic
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .chaves import FonteChaveApi, SemChaveCliente
@@ -26,6 +27,22 @@ class CorpoConversa(BaseModel):
     # Os ids seguem o formato de `api_central._ID` (até 64): sem teto, um corpo enorme iria parar na API e no histórico.
     sessao_id: str | None = Field(default=None, max_length=64)
     obra_id: str | None = Field(default=None, max_length=64)
+
+
+# Mensagem por campo do corpo: a tela mostra o `detail` como veio, então ele tem de ser frase, não a lista do Pydantic.
+_CAMPOS = {
+    "texto": "A pergunta tem de ter de 1 a 8.000 caracteres.",
+    "sessao_id": "Identificador de conversa inválido.",
+    "obra_id": "Identificador de obra inválido.",
+}
+
+
+def mensagem_de_validacao(e: RequestValidationError) -> str:
+    campos = [str(err["loc"][1]) for err in e.errors() if len(err.get("loc", ())) > 1 and err["loc"][0] == "body"]
+    for campo in campos:
+        if campo in _CAMPOS:
+            return _CAMPOS[campo]
+    return "Pedido inválido: envie {texto, sessao_id?, obra_id?} em JSON."
 
 
 def formatar_sse(evento: Evento) -> str:
@@ -93,6 +110,11 @@ def criar_app(dep: Dependencias | None = None) -> FastAPI:
     app = FastAPI(title="Canteiro · agente", lifespan=ciclo)
     if dep is not None:
         app.state.dep = dep
+
+    @app.exception_handler(RequestValidationError)
+    async def _invalido(_: Request, e: RequestValidationError):
+        # o contrato é {detail: "mensagem pronta"} em todo erro; sem isto sairia a lista crua do Pydantic
+        return JSONResponse(status_code=422, content={"detail": mensagem_de_validacao(e)})
 
     @app.post("/conversa")
     async def conversa(corpo: CorpoConversa, authorization: str | None = Header(default=None)):

@@ -15,14 +15,17 @@ import httpx
 
 from canteiro_dominio.tipos import novo_id
 
-from .api_central import ErroApi, mensagem_de
+from .api_central import STATUS_FORA_DO_AR, ApiForaDoAr, ErroApi, mensagem_de
 
 LOTE_MAX = 50          # limite da API por POST de mensagens
 PAGINA = 200
 
 
-class SessaoDeOutro(PermissionError):
-    pass
+class NaoEncontrada(LookupError):
+    """404/403 da API ao abrir ou ler: conversa de outra pessoa ou de outro cliente, ou a obra informada não é deste
+    cliente. A mensagem é a da API ("Conversa não encontrada.", "Obra não encontrada."), que já foi escrita para não
+    revelar o que existe; trocá-la aqui por uma só confundiria quem pediu uma obra errada com quem pediu uma conversa
+    alheia."""
 
 
 class HistoricoDivergiu(RuntimeError):
@@ -59,10 +62,15 @@ class SessoesApi:
         self._base = base_url.rstrip("/")
 
     async def _req(self, metodo: str, caminho: str, autorizacao: str, **kw: Any) -> Any:
-        resp = await self._http.request(metodo, self._base + caminho, headers={"Authorization": autorizacao}, **kw)
+        try:
+            resp = await self._http.request(metodo, self._base + caminho, headers={"Authorization": autorizacao},
+                                            **kw)
+        except httpx.HTTPError as e:
+            raise ApiForaDoAr(type(e).__name__) from None
+        if resp.status_code in STATUS_FORA_DO_AR:
+            raise ApiForaDoAr(f"HTTP {resp.status_code}")
         if resp.status_code in (403, 404):
-            # A API responde 404 para sessão de outra pessoa: não revela que ela existe.
-            raise SessaoDeOutro("Conversa não encontrada.")
+            raise NaoEncontrada(mensagem_de(resp))
         if resp.status_code == 409:
             raise HistoricoDivergiu(mensagem_de(resp))
         if resp.status_code >= 400:
@@ -114,7 +122,7 @@ class SessoesEmMemoria:
             if sessao_id and sessao_id in self._dados:
                 s = self._dados[sessao_id]
                 if s.dono != dono:
-                    raise SessaoDeOutro("Conversa não encontrada.")
+                    raise NaoEncontrada("Conversa não encontrada.")
                 return Sessao(s.id, s.dono, list(s.mensagens), s.total)
             s = Sessao(sessao_id or novo_id(), dono)
             self._dados[s.id] = s

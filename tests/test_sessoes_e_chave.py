@@ -4,7 +4,7 @@ import logging
 import pytest
 
 from canteiro_agente.chaves import FonteChaveApi
-from canteiro_agente.sessoes import HistoricoDivergiu, SessaoDeOutro, SessoesApi
+from canteiro_agente.sessoes import HistoricoDivergiu, NaoEncontrada, SessoesApi
 
 from falsos import OBRA, TOKEN_OUTRO, TOKEN_SERVICO, TOKEN_USUARIO, ApiFalsa, Resposta, ferramenta, texto
 
@@ -49,7 +49,7 @@ async def test_lotes_de_50_e_leitura_paginada(monkeypatch):
 async def test_sessao_de_outra_pessoa_e_escrita_fora_de_ordem():
     api, repo = _repo()
     s = await repo.abrir(None, dono="u1", autorizacao=TOKEN_USUARIO)
-    with pytest.raises(SessaoDeOutro):
+    with pytest.raises(NaoEncontrada):
         await repo.abrir(s.id, dono="u2", autorizacao=TOKEN_OUTRO)
     copia = await repo.abrir(s.id, dono="u1", autorizacao=TOKEN_USUARIO)
     await repo.acrescentar(s, [{"role": "user", "content": "a"}], autorizacao=TOKEN_USUARIO)

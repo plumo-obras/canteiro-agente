@@ -97,7 +97,11 @@ async def test_proposta_vira_evento_sse_e_nao_executa_nada(ambiente):
     ferr = [d for e, d in eventos if e == "ferramenta"]
     assert ferr[0]["nome"] == "propor_pedido" and ferr[0]["nivel"] == "propoe"
     [proposta] = [d for e, d in eventos if e == "proposta"]
-    assert proposta["id"] == "proposta-1" and proposta["status"] == "pendente"
+    sessao_id = eventos[-1][1]["sessao_id"]
+    # chave de idempotência = (sessão, tool_use): repetir esta chamada cai na mesma proposta
+    [post] = amb.api.feitas("POST", "/propostas")
+    assert post.corpo["chave_idempotencia"] == f"{sessao_id}:toolu_1"
+    assert proposta["status"] == "pendente" and proposta["ja_existia"] is False
     assert proposta["tipo"] == "criar_pedido"
     # A conversão para milésimos e centavos é do domínio (tipos.qtd/reais), não do modelo.
     assert proposta["dados"] == {"insumo_id": "insumo-cimento", "quantidade": 34_000, "fornecedor": "Votorantim",

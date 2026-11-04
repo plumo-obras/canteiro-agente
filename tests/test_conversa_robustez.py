@@ -117,10 +117,11 @@ async def test_json_ilegivel_registra_a_tentativa_e_manda_descartar_o_texto(ambi
 
 
 async def test_outro_value_error_nao_vira_repeticao(ambiente, monkeypatch):
-    def quebrado(self):
+    def quebrado(historico):
         raise ValueError("defeito nosso, não do JSON do modelo")
 
-    monkeypatch.setattr(mod.Eventos, "esvaziar", quebrado)
+    # roda dentro do mesmo try que trata o JSON ilegível (gravação do histórico depois da rodada de ferramentas)
+    monkeypatch.setattr(mod, "_sem_pendencia", quebrado)
     amb = ambiente([
         Resposta([texto("Vou ver."), ferramenta("listar_obras", {})], stop_reason="tool_use"),
         Resposta([texto("não devia chegar aqui")]),

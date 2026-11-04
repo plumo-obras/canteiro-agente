@@ -13,6 +13,12 @@ Ordem que importa:
 A volta roda numa tarefa própria e conversa com o SSE por uma fila. Assim o SSE manda "ping" enquanto espera, o
 tempo máximo vale para a volta e não para o envio à tela, e o cancelamento que o servidor faz quando a pessoa fecha
 a aba cai num ponto só, onde o consumo parcial é gravado.
+
+Uma volta por sessão de cada vez (`_em_andamento`): duas abas na mesma conversa disputariam o mesmo `seq_inicial`, e
+a perdedora levaria 409 em toda gravação, com a proposta dela fora do histórico. A trava é do processo, e basta
+porque o agente roda numa instância só (Render). Com mais de uma instância ela deixa de valer entre elas; aí quem
+segura a ordem é a API, que recusa com 409 o lote fora de sequência (`HistoricoDivergiu`), e a volta avisa que a
+parte dela não foi salva.
 """
 import asyncio
 import base64
@@ -31,13 +37,13 @@ from anthropic import AsyncAnthropic
 
 from canteiro_dominio.tipos import novo_id
 
-from .api_central import ApiCentral, ErroApi, registrar_uso
+from .api_central import FORA_DO_AR, ApiCentral, ApiForaDoAr, ErroApi, registrar_uso
 from .chaves import FonteChaveCliente
 from .config import ESFORCO_POR_ROTA, Config
 from .ferramentas import NIVEIS, Eventos, criar_ferramentas
 from .instrucao import INSTRUCAO
 from .precos import ModeloSemPreco, Tokens, medir
-from .sessoes import HistoricoDivergiu, RepositorioSessoes, SessaoDeOutro
+from .sessoes import HistoricoDivergiu, NaoEncontrada, RepositorioSessoes
 
 log = logging.getLogger("canteiro_agente")
 
@@ -74,6 +80,14 @@ AVISO_LIMITE_PASSOS = ("Precisei de mais passos do que o limite de uma resposta 
                        "Peça para eu continuar ou divida o pedido em partes menores.")
 AVISO_TEMPO = ("A resposta demorou demais e foi interrompida. O que já foi feito ficou salvo; "
                "peça para eu continuar ou tente algo mais específico.")
+AVISO_OCUPADA = "Esta conversa ainda está respondendo à pergunta anterior. Espere ela terminar e mande de novo."
+AVISO_DIVERGIU = ("Esta conversa recebeu outra resposta ao mesmo tempo (outra aba?) e esta parte não foi salva. "
+                  "Recarregue a conversa antes de continuar.")
+AVISO_NAO_SALVOU = "Não consegui salvar esta parte da conversa; a próxima pergunta pode não lembrar dela."
+
+# Sessões com uma volta em andamento neste processo. Conferir e marcar acontecem sem `await` no meio, então duas
+# voltas no mesmo laço de eventos não passam juntas.
+_em_andamento: set[str] = set()
 
 
 @dataclass
@@ -271,6 +285,9 @@ async def _volta(
     # 1. Trava de crédito, antes de gastar qualquer token.
     try:
         creditos = await api.creditos()
+    except ApiForaDoAr:
+        emitir(_erro(FORA_DO_AR))
+        return
     except ErroApi as e:
         if e.status == 402:
             emitir(_erro(e.mensagem
@@ -281,7 +298,7 @@ async def _volta(
             emitir(_erro("Não consegui consultar seus créditos agora. Tente de novo em instantes."))
         return
     except httpx.HTTPError:
-        emitir(_erro("O sistema está fora do ar agora. Tente de novo em instantes."))
+        emitir(_erro(FORA_DO_AR))
         return
 
     # Modo roteiro (demonstração): ninguém fala com o modelo de verdade, nem quem tem chave própria.
@@ -301,23 +318,40 @@ async def _volta(
         cliente = dep.cliente_plataforma
 
     claims = _claims(autorizacao)
+    travada: str | None = None
     try:
         try:
             sessao = await dep.sessoes.abrir(
                 pedido.sessao_id, dono=_dono(autorizacao, creditos, claims), autorizacao=autorizacao,
                 obra_id=pedido.obra_id, titulo=pedido.texto[:80],
             )
-        except SessaoDeOutro as e:
-            emitir(_erro(str(e)))
+        except NaoEncontrada as e:
+            # a mensagem é a da API: "Conversa não encontrada." ou "Obra não encontrada.", sem revelar mais que isso
+            emitir(_erro(str(e) or "Conversa não encontrada."))
             return
-        except (ErroApi, httpx.HTTPError):
+        except (ApiForaDoAr, httpx.HTTPError):
+            emitir(_erro(FORA_DO_AR))
+            return
+        except ErroApi as e:
+            emitir(_erro("Sua sessão expirou. Entre de novo." if e.status == 401
+                         else "Não consegui abrir o histórico desta conversa. Tente de novo em instantes."))
+            return
+        except HistoricoDivergiu:
             emitir(_erro("Não consegui abrir o histórico desta conversa. Tente de novo em instantes."))
             return
+        # Depois de abrir, e não antes: só o dono passa do `abrir`, então quem chuta o ID de uma conversa alheia
+        # recebe "não encontrada", nunca "ainda está respondendo" (que diria que ela existe e está em uso).
+        if sessao.id in _em_andamento:
+            emitir(_erro(AVISO_OCUPADA))
+            return
+        _em_andamento.add(sessao.id)
+        travada = sessao.id
         estado["sessao_id"] = sessao.id
 
         historico = sessao.mensagens + [{"role": "user", "content": _conteudo_usuario(pedido)}]
-        eventos = Eventos()
+        eventos = Eventos(emitir=emitir, sessao_id=sessao.id)
         ferramentas = criar_ferramentas(api, eventos)
+        divergiu = False
         total, custo_total = Tokens(), 0
         repeticoes_json = 0
 
@@ -366,18 +400,25 @@ async def _volta(
                 await registrar(parcial.modelo, parcial)
 
         async def gravar_historico() -> bool:
+            nonlocal divergiu
             novas = _sem_pendencia(historico)[len(sessao.mensagens):]
             if not novas:
                 return True
             try:
                 await dep.sessoes.acrescentar(sessao, novas, autorizacao=autorizacao)
                 return True
-            except (HistoricoDivergiu, ErroApi, httpx.HTTPError) as e:
+            except HistoricoDivergiu as e:
+                # outra instância gravou nesta sessão (a trava local não alcança outro processo)
+                divergiu = True
+                log.error("Histórico da sessão %s divergiu: %s", sessao.id, e)
+                return False
+            except (ErroApi, httpx.HTTPError) as e:
                 log.error("Histórico da sessão %s não gravado: %s", sessao.id, e)
                 return False
 
         # Resposta em andamento: o uso dela só existe aqui até a mensagem final chegar e ser registrada.
         atual: UsoParcial | None = None
+        caiu = False   # a API central parou de responder no meio das ferramentas
         try:
             while True:
                 runner = cliente.beta.messages.tool_runner(
@@ -412,6 +453,7 @@ async def _volta(
                         msg = await stream.get_final_message()
                         atual = None   # daqui em diante quem registra é a mensagem final (sem contar duas vezes)
                         await registrar(msg.model, msg.usage)
+                        eventos.nova_resposta(msg.content)
                         historico.append({"role": "assistant", "content": [b.to_dict() for b in msg.content]})
                         ultima_parada, rodou_ferramentas = msg.stop_reason, False
                         if msg.stop_reason == "refusal":
@@ -420,14 +462,19 @@ async def _volta(
                         if msg.stop_reason == "max_tokens":
                             emitir(_erro("A resposta ficou longa demais e foi cortada. Peça algo mais específico."))
                             break
-                        # Executa as ferramentas aqui (o runner reaproveita o resultado) para os eventos saírem na
-                        # ordem.
+                        # Executa as ferramentas aqui (o runner reaproveita o resultado): cada uma anuncia o
+                        # próprio evento `ferramenta` ao começar e o `proposta` ao criar.
                         resposta = await runner.generate_tool_call_response()
-                        for evento in eventos.esvaziar():
-                            emitir(evento)
                         if resposta is not None:
                             historico.append(resposta)
                             rodou_ferramentas = True
+                            if api.fora_do_ar:
+                                # O SDK já entregou o erro como tool_result; seguir só pagaria outra resposta do
+                                # modelo para tentar de novo contra a API caída. O aviso sai antes de tentar gravar
+                                # (que provavelmente também falha, e pode demorar o tempo do timeout).
+                                caiu = True
+                                emitir(_erro(FORA_DO_AR))
+                                break
                             # Rodada completa (chamada + resultado): grava já. Se a conexão cair depois de uma
                             # proposta, a próxima pergunta sabe que ela existe e não propõe de novo.
                             await gravar_historico()
@@ -463,9 +510,9 @@ async def _volta(
                 pass   # cancelada de novo enquanto esperava: a gravação segue na tarefa protegida
             raise
 
-        if not await gravar_historico():
+        if not await gravar_historico() and not caiu:
             # A resposta já foi dada e o consumo já foi gravado; só o histórico desta volta se perde.
-            emitir(_erro("Não consegui salvar esta parte da conversa; a próxima pergunta pode não lembrar dela."))
+            emitir(_erro(AVISO_DIVERGIU if divergiu else AVISO_NAO_SALVOU))
         emitir(("fim", {"sessao_id": sessao.id, "uso": {"tokens": total.total, "custo": custo_total}}))
 
     except anthropic.AuthenticationError:
@@ -479,5 +526,7 @@ async def _volta(
     except anthropic.APIConnectionError:
         emitir(_erro("Não consegui falar com o assistente agora. Tente de novo em instantes."))
     finally:
+        if travada is not None:
+            _em_andamento.discard(travada)
         if cliente_proprio is not None:
             await cliente_proprio.close()
