@@ -3,7 +3,7 @@
 # Imagens por digest (índice multi-arch): a tag anda sozinha e o build deixaria de ser reprodutível. Quem atualiza o
 # digest é o Dependabot (.github/dependabot.yml), num PR que passa pelo CI.
 # Estágio só para o binário do uv: o Dependabot lê FROM, não o --mount=from= dos RUN.
-FROM ghcr.io/astral-sh/uv:0.11@sha256:77280f2f771df71f90786c314fe1bbc1e023feac652969bbf139c280babf2eb7 AS uv
+FROM ghcr.io/astral-sh/uv:0.13@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 AS uv
 
 FROM python:3.14-slim@sha256:930e1abba7c4e8f96ed93e8012c35d174d7732752731bbd5e8e757d7ec6f3966 AS build
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
