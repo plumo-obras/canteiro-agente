@@ -17,6 +17,7 @@ from falsos import TOKEN_SERVICO, TOKEN_USUARIO, AnthropicFalsa, ApiFalsa  # noq
 
 class Ambiente:
     def __init__(self, roteiro):
+        self.comentarios: list[str] = []
         self.api = ApiFalsa()
         self.anthropic = AnthropicFalsa(roteiro)
         self.dep = Dependencias(
@@ -38,6 +39,9 @@ class Ambiente:
         assert resp.headers["content-type"].startswith("text/event-stream")
         eventos = []
         for bloco in resp.text.strip().split("\n\n"):
+            if bloco.startswith(":"):
+                self.comentarios.append(bloco)   # ping: comentário SSE, não é evento
+                continue
             linhas = dict(l.split(": ", 1) for l in bloco.splitlines())
             eventos.append((linhas["event"], json.loads(linhas["data"])))
         return eventos

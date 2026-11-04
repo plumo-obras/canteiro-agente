@@ -88,11 +88,15 @@ def _tokens_de(u: Any) -> Tokens:
     )
 
 
-def medir(modelo_pedido: str, modelo_resposta: str | None, usage: Any) -> tuple[Tokens, int]:
+def medir(
+    modelo_pedido: str, modelo_resposta: str | None, usage: Any, *, preco_de: str | None = None
+) -> tuple[Tokens, int]:
     """Tokens e custo de uma resposta.
 
     Se houve fallback (uma recusa resgatada por outro modelo), `usage.iterations` traz uma linha por modelo que rodou,
     cada uma no seu preço. Sem fallback, vale o `usage` do topo no preço do modelo que respondeu.
+    `preco_de` força um preço só para todas as linhas: é o recurso de quem pegou `ModeloSemPreco` e ainda precisa
+    gravar a linha (a contagem de tokens continua exata; só o preço é aproximado).
     """
     iteracoes = getattr(usage, "iterations", None) or []
     if any(getattr(i, "type", None) == "fallback_message" for i in iteracoes):
@@ -102,7 +106,7 @@ def medir(modelo_pedido: str, modelo_resposta: str | None, usage: Any) -> tuple[
                 continue
             t = _tokens_de(i)
             total += t
-            exato += _custo_exato(getattr(i, "model", None) or modelo_pedido, t)
+            exato += _custo_exato(preco_de or getattr(i, "model", None) or modelo_pedido, t)
         return total, _arredonda(exato)
     t = _tokens_de(usage)
-    return t, custo_microdolares(modelo_resposta or modelo_pedido, t)
+    return t, custo_microdolares(preco_de or modelo_resposta or modelo_pedido, t)

@@ -2,10 +2,17 @@
 
 Ordem que importa:
 1. `GET /creditos` antes de qualquer chamada ao modelo (sem saldo, nem começa).
-2. Cada resposta do modelo grava `POST /uso` na hora, não no fim: se a conexão cair no meio, o que já foi gasto
-   já está no livro de consumo.
-3. O histórico é espelhado aqui (mensagem do modelo, depois o resultado das ferramentas) e só cresce no fim; nunca
-   editamos mensagem antiga, o que manteria inválidos o cache e os blocos de raciocínio.
+2. Cada resposta do modelo grava `POST /uso` na hora, não no fim. O uso é somado pelos eventos do stream enquanto ele
+   chega: se a conexão cair no meio (ou a volta estourar o tempo), o que já foi gasto vai para o livro de consumo
+   mesmo assim, numa gravação protegida do cancelamento.
+3. O histórico é espelhado aqui (mensagem do modelo, depois o resultado das ferramentas) e é gravado a cada rodada
+   de ferramentas completa, não só no fim: uma proposta criada antes de a conexão cair já está no histórico, e a
+   próxima pergunta não a propõe de novo. Nunca editamos mensagem antiga, o que invalidaria o cache e os blocos de
+   raciocínio.
+
+A volta roda numa tarefa própria e conversa com o SSE por uma fila. Assim o SSE manda "ping" enquanto espera, o
+tempo máximo vale para a volta e não para o envio à tela, e o cancelamento que o servidor faz quando a pessoa fecha
+a aba cai num ponto só, onde o consumo parcial é gravado.
 """
 import asyncio
 import base64
@@ -13,7 +20,7 @@ import hashlib
 import json
 import logging
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -27,20 +34,46 @@ from canteiro_dominio.tipos import novo_id
 from .api_central import ApiCentral, ErroApi, registrar_uso
 from .chaves import FonteChaveCliente
 from .config import ESFORCO_POR_ROTA, Config
-from .ferramentas import Eventos, criar_ferramentas
+from .ferramentas import NIVEIS, Eventos, criar_ferramentas
 from .instrucao import INSTRUCAO
-from .precos import Tokens, medir
+from .precos import ModeloSemPreco, Tokens, medir
 from .sessoes import HistoricoDivergiu, RepositorioSessoes, SessaoDeOutro
 
 log = logging.getLogger("canteiro_agente")
 
 # Recusa do classificador de segurança é refeita no servidor em outro modelo, escolhido pela categoria da recusa.
 BETA_FALLBACK = "server-side-fallback-2026-07-01"
+BETA_CONTEXTO = "context-management-2025-06-27"
 FUSO = ZoneInfo("America/Sao_Paulo")
 MAX_REPETICOES_JSON = 2
 TENTATIVAS_USO = 3
 
+# Sessão longa cresce sem limite e cada pergunta reenvia tudo; o grosso são os resultados de ferramenta (JSON da
+# API). A edição de contexto do servidor limpa os resultados antigos antes de o modelo ver, sem mexer no histórico
+# guardado (que continua só crescendo). Conservadora de propósito: só dispara com contexto já grande, mantém as
+# últimas chamadas e só limpa se valer a pena, porque cada limpeza quebra o cache do histórico dali em diante.
+# As ferramentas que propõem ficam fora: o modelo precisa continuar vendo o que já propôs para não propor de novo.
+GESTAO_DE_CONTEXTO: dict[str, Any] = {"edits": [{
+    "type": "clear_tool_uses_20250919",
+    "trigger": {"type": "input_tokens", "value": 150_000},
+    "keep": {"type": "tool_uses", "value": 8},
+    "clear_at_least": {"type": "input_tokens", "value": 30_000},
+    "exclude_tools": sorted(nome for nome, nivel in NIVEIS.items() if nivel == "propoe"),
+}]}
+
+# Começo da mensagem do SDK quando não consegue ler o JSON de entrada de ferramenta que chega em streaming. É um
+# ValueError genérico; o texto é o único jeito de não confundir com outro ValueError (que é bug e tem de aparecer).
+_JSON_ILEGIVEL = "Unable to parse tool parameter JSON from model"
+
 Evento = tuple[str, dict[str, Any]]
+# Comentário SSE (nome começando com ":"): o navegador ignora, mas o tráfego mantém viva a conexão (proxy, função
+# da Vercel) enquanto o modelo pensa ou uma ferramenta demora.
+PING: Evento = (": ping", {})
+
+AVISO_LIMITE_PASSOS = ("Precisei de mais passos do que o limite de uma resposta e parei antes de concluir. "
+                       "Peça para eu continuar ou divida o pedido em partes menores.")
+AVISO_TEMPO = ("A resposta demorou demais e foi interrompida. O que já foi feito ficou salvo; "
+               "peça para eu continuar ou tente algo mais específico.")
 
 
 @dataclass
@@ -106,6 +139,67 @@ def _sem_pendencia(historico: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return historico
 
 
+def _json_ilegivel(e: ValueError) -> bool:
+    return str(e).startswith(_JSON_ILEGIVEL)
+
+
+@dataclass
+class UsoParcial:
+    """Uso de uma resposta montado pelos eventos do stream, para quando a resposta não chega ao fim.
+
+    Tem os mesmos nomes do `usage` da API, então `medir` lê este objeto como lê o da mensagem final. O
+    `message_start` traz entrada e cache; o `message_delta` traz a saída (e repete o resto quando muda). Os números
+    do delta são totais acumulados, por isso substituem em vez de somar.
+    """
+    modelo: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    iterations: Any = None
+    texto: list[str] = field(default_factory=list)   # o que desta resposta já foi para a tela
+
+    def ver(self, ev: Any) -> None:
+        if ev.type == "message_start":
+            self.modelo = ev.message.model
+            self._copiar(ev.message.usage)
+        elif ev.type == "message_delta":
+            self._copiar(ev.usage)
+        elif ev.type == "content_block_start" and getattr(ev.content_block, "type", None) == "fallback":
+            # Recusa resgatada no meio do stream: quem responde dali em diante é o modelo do fallback.
+            self.modelo = ev.content_block.to.model
+        elif ev.type == "text":
+            self.texto.append(ev.text)
+
+    def _copiar(self, u: Any) -> None:
+        for nome in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+                     "iterations"):
+            valor = getattr(u, nome, None)
+            if valor is not None:
+                setattr(self, nome, valor)
+
+    @property
+    def vazio(self) -> bool:
+        return self.modelo is None
+
+
+# Voltas e gravações de consumo em andamento. A referência forte impede o coletor de lixo de sumir com uma tarefa
+# que já não tem quem a espere (o SSE foi cancelado); `aguardar_pendentes` deixa o desligamento e os testes
+# esperarem por elas.
+_pendentes: set[asyncio.Task[Any]] = set()
+
+
+def _acompanhar(tarefa: asyncio.Task[Any]) -> asyncio.Task[Any]:
+    _pendentes.add(tarefa)
+    tarefa.add_done_callback(_pendentes.discard)
+    return tarefa
+
+
+async def aguardar_pendentes() -> None:
+    while _pendentes:
+        await asyncio.gather(*list(_pendentes), return_exceptions=True)
+
+
 async def _gravar_uso(dep: Dependencias, autorizacao: str, uso: dict[str, Any]) -> None:
     if not dep.config.token_servico:
         log.error("TOKEN_SERVICO_AGENTE ausente: consumo não gravado %s", json.dumps(uso))
@@ -125,6 +219,53 @@ async def _gravar_uso(dep: Dependencias, autorizacao: str, uso: dict[str, Any]) 
 async def conversar(
     dep: Dependencias, autorizacao: str, pedido: PedidoConversa, rota: str = "conversa"
 ) -> AsyncIterator[Evento]:
+    """Eventos da volta para o SSE, com `PING` nos silêncios. Fechar este gerador cancela a volta."""
+    fila: asyncio.Queue[Evento | None] = asyncio.Queue()
+    tarefa = _acompanhar(asyncio.create_task(_produzir(dep, autorizacao, pedido, rota, fila.put_nowait)))
+    try:
+        while True:
+            try:
+                evento = await asyncio.wait_for(fila.get(), dep.config.intervalo_ping)
+            except TimeoutError:
+                yield PING
+                continue
+            if evento is None:
+                break
+            yield evento
+        await tarefa   # erro inesperado da volta sobe para o SSE, que avisa a tela
+    finally:
+        # A pessoa fechou a aba (o servidor cancela ou fecha este gerador): a volta para, e o cancelamento dela
+        # grava o consumo parcial. Não esperamos aqui porque quem está sendo cancelado é este gerador.
+        if not tarefa.done():
+            tarefa.cancel()
+
+
+async def _produzir(
+    dep: Dependencias, autorizacao: str, pedido: PedidoConversa, rota: str, emitir: Callable[[Evento | None], None]
+) -> None:
+    estado: dict[str, Any] = {}
+    try:
+        try:
+            async with asyncio.timeout(dep.config.tempo_max_volta) as prazo:
+                await _volta(dep, autorizacao, pedido, rota, emitir, estado)
+        except TimeoutError:
+            if not prazo.expired():
+                raise
+            log.warning("Volta passou de %ss e foi interrompida (sessão %s)", dep.config.tempo_max_volta,
+                        estado.get("sessao_id"))
+            emitir(_erro(AVISO_TEMPO))
+            if estado.get("sessao_id"):
+                # Sem o `fim` a tela não guarda o sessao_id, e a próxima pergunta abriria outra conversa.
+                emitir(("fim", {"sessao_id": estado["sessao_id"],
+                                "uso": estado.get("uso", {"tokens": 0, "custo": 0})}))
+    finally:
+        emitir(None)
+
+
+async def _volta(
+    dep: Dependencias, autorizacao: str, pedido: PedidoConversa, rota: str,
+    emitir: Callable[[Evento | None], None], estado: dict[str, Any],
+) -> None:
     api = ApiCentral(dep.http_api, dep.config.api_url, autorizacao)
 
     # 1. Trava de crédito, antes de gastar qualquer token.
@@ -132,14 +273,14 @@ async def conversar(
         creditos = await api.creditos()
     except ErroApi as e:
         if e.status == 402:
-            yield _erro(e.mensagem or "Os créditos de IA acabaram. Fale com o administrador da conta para recarregar.")
+            emitir(_erro(e.mensagem or "Os créditos de IA acabaram. Fale com o administrador da conta para recarregar."))
         elif e.status == 401:
-            yield _erro("Sua sessão expirou. Entre de novo.")
+            emitir(_erro("Sua sessão expirou. Entre de novo."))
         else:
-            yield _erro("Não consegui consultar seus créditos agora. Tente de novo em instantes.")
+            emitir(_erro("Não consegui consultar seus créditos agora. Tente de novo em instantes."))
         return
     except httpx.HTTPError:
-        yield _erro("O sistema está fora do ar agora. Tente de novo em instantes.")
+        emitir(_erro("O sistema está fora do ar agora. Tente de novo em instantes."))
         return
 
     # Modo roteiro (demonstração): ninguém fala com o modelo de verdade, nem quem tem chave própria.
@@ -149,11 +290,11 @@ async def conversar(
     if chave_propria:
         chave = await dep.fonte_chave.chave_do_cliente(autorizacao)
         if not chave:
-            yield _erro("A chave própria da Anthropic desta conta ainda não está disponível para o agente.")
+            emitir(_erro("A chave própria da Anthropic desta conta ainda não está disponível para o agente."))
             return
         cliente = cliente_proprio = dep.fabrica_cliente_proprio(chave)
     elif dep.cliente_plataforma is None:
-        yield _erro("O agente não está configurado neste ambiente.")
+        emitir(_erro("O agente não está configurado neste ambiente."))
         return
     else:
         cliente = dep.cliente_plataforma
@@ -166,11 +307,12 @@ async def conversar(
                 obra_id=pedido.obra_id, titulo=pedido.texto[:80],
             )
         except SessaoDeOutro as e:
-            yield _erro(str(e))
+            emitir(_erro(str(e)))
             return
         except (ErroApi, httpx.HTTPError):
-            yield _erro("Não consegui abrir o histórico desta conversa. Tente de novo em instantes.")
+            emitir(_erro("Não consegui abrir o histórico desta conversa. Tente de novo em instantes."))
             return
+        estado["sessao_id"] = sessao.id
 
         historico = sessao.mensagens + [{"role": "user", "content": _conteudo_usuario(pedido)}]
         eventos = Eventos()
@@ -178,13 +320,23 @@ async def conversar(
         total, custo_total = Tokens(), 0
         repeticoes_json = 0
 
-        async def registrar(msg: Any) -> None:
+        async def registrar(modelo_resposta: str | None, usage: Any) -> None:
             nonlocal total, custo_total
             if roteiro:
                 return  # o roteiro não gasta token: gravar /uso descontaria créditos de verdade por respostas grátis
-            tokens, custo = medir(dep.config.modelo, msg.model, msg.usage)
+            try:
+                tokens, custo = medir(dep.config.modelo, modelo_resposta, usage)
+                sem_preco = False
+            except ModeloSemPreco:
+                # Com fallbacks="default" o servidor escolhe o modelo do resgate, e ele pode estar fora da tabela.
+                # A resposta já foi paga: perder a linha é pior que um preço aproximado. Grava no preço do modelo
+                # pedido e põe a linha inteira no log para acertar a diferença (UsoIA não tem campo de marcação, e
+                # a API descartaria um campo a mais em silêncio).
+                tokens, custo = medir(dep.config.modelo, modelo_resposta, usage, preco_de=dep.config.modelo)
+                sem_preco = True
             total, custo_total = total + tokens, custo_total + custo
-            await _gravar_uso(dep, autorizacao, {
+            estado["uso"] = {"tokens": total.total, "custo": custo_total}
+            linha = {
                 "id": novo_id(),
                 # A API confere com o token do cabeçalho X-Canteiro-Usuario; o corpo segue o modelo UsoIA.
                 "tenant_id": creditos.get("tenant_id") or claims.get("tid"),
@@ -192,7 +344,7 @@ async def conversar(
                 "sessao_id": sessao.id,
                 "obra_id": pedido.obra_id,
                 "rota": rota,
-                "modelo": msg.model or dep.config.modelo,
+                "modelo": modelo_resposta or dep.config.modelo,
                 "tokens_entrada": tokens.entrada,
                 "tokens_saida": tokens.saida,
                 "tokens_cache_leitura": tokens.cache_leitura,
@@ -200,79 +352,131 @@ async def conversar(
                 "custo_microdolares": custo,
                 "chave_propria": chave_propria,
                 "dia": datetime.now(FUSO).date().isoformat(),
-            })
+            }
+            if sem_preco:
+                log.error("Modelo %s sem preço: consumo gravado no preço de %s; reconciliar: %s",
+                          modelo_resposta, dep.config.modelo, json.dumps(linha))
+            # A gravação roda numa tarefa própria e protegida: se a volta for cancelada enquanto espera, a linha
+            # ainda chega à API. O `id` fixo garante que nada se grava duas vezes.
+            await asyncio.shield(_acompanhar(asyncio.create_task(_gravar_uso(dep, autorizacao, linha))))
 
-        while True:
-            runner = cliente.beta.messages.tool_runner(
-                model=dep.config.modelo,
-                max_tokens=dep.config.max_tokens,
-                max_iterations=dep.config.max_iteracoes,
-                # Um ponto de cache no fim da instrução cobre ferramentas + instrução (vêm antes, nessa ordem);
-                # o cache automático do topo cobre o histórico, que só cresce.
-                system=[{"type": "text", "text": INSTRUCAO, "cache_control": {"type": "ephemeral"}}],
-                cache_control={"type": "ephemeral"},
-                thinking={"type": "adaptive"},
-                output_config={"effort": ESFORCO_POR_ROTA.get(rota, "medium")},
-                tool_choice={"type": "auto"},
-                tools=ferramentas,
-                messages=historico,
-                betas=[BETA_FALLBACK],
-                fallbacks="default",
-                # O histórico é nosso (sessões portáveis), não uma thread guardada no servidor da Anthropic.
-                thread=False,
-                stream=True,
-            )
+        async def registrar_parcial(parcial: UsoParcial | None) -> None:
+            if parcial is not None and not parcial.vazio:
+                await registrar(parcial.modelo, parcial)
+
+        async def gravar_historico() -> bool:
+            novas = _sem_pendencia(historico)[len(sessao.mensagens):]
+            if not novas:
+                return True
             try:
-                async for stream in runner:
-                    async for ev in stream:
-                        if ev.type == "text":
-                            yield ("texto", {"delta": ev.text})
-                    msg = await stream.get_final_message()
-                    await registrar(msg)
-                    historico.append({"role": "assistant", "content": [b.to_dict() for b in msg.content]})
-                    if msg.stop_reason == "refusal":
-                        yield _erro("Não posso ajudar com esse pedido. Tente reformular.")
-                        break
-                    if msg.stop_reason == "max_tokens":
-                        yield _erro("A resposta ficou longa demais e foi cortada. Peça algo mais específico.")
-                        break
-                    # Executa as ferramentas aqui (o runner reaproveita o resultado) para os eventos saírem na ordem.
-                    resposta = await runner.generate_tool_call_response()
-                    for evento in eventos.esvaziar():
-                        yield evento
-                    if resposta is not None:
-                        historico.append(resposta)
-                break
-            except ValueError:
-                # JSON de chamada de ferramenta que o SDK não conseguiu ler (entrada em streaming). Não há
-                # tool_use_id para responder: refaz a volta a partir do histórico espelhado, com limite.
-                repeticoes_json += 1
-                log.warning("Entrada de ferramenta ilegível; repetindo (%d)", repeticoes_json)
-                if repeticoes_json > MAX_REPETICOES_JSON:
-                    yield _erro("Não consegui concluir agora. Tente de novo.")
-                    break
-            finally:
-                await runner.close()
+                await dep.sessoes.acrescentar(sessao, novas, autorizacao=autorizacao)
+                return True
+            except (HistoricoDivergiu, ErroApi, httpx.HTTPError) as e:
+                log.error("Histórico da sessão %s não gravado: %s", sessao.id, e)
+                return False
 
-        novas = _sem_pendencia(historico)[len(sessao.mensagens):]
+        # Resposta em andamento: o uso dela só existe aqui até a mensagem final chegar e ser registrada.
+        atual: UsoParcial | None = None
         try:
-            await dep.sessoes.acrescentar(sessao, novas, autorizacao=autorizacao)
-        except (HistoricoDivergiu, ErroApi, httpx.HTTPError) as e:
+            while True:
+                runner = cliente.beta.messages.tool_runner(
+                    model=dep.config.modelo,
+                    max_tokens=dep.config.max_tokens,
+                    max_iterations=dep.config.max_iteracoes,
+                    # Um ponto de cache no fim da instrução cobre ferramentas + instrução (vêm antes, nessa ordem);
+                    # o cache automático do topo cobre o histórico, que só cresce.
+                    system=[{"type": "text", "text": INSTRUCAO, "cache_control": {"type": "ephemeral"}}],
+                    cache_control={"type": "ephemeral"},
+                    thinking={"type": "adaptive"},
+                    output_config={"effort": ESFORCO_POR_ROTA.get(rota, "medium")},
+                    tool_choice={"type": "auto"},
+                    tools=ferramentas,
+                    messages=historico,
+                    context_management=GESTAO_DE_CONTEXTO,
+                    betas=[BETA_FALLBACK, BETA_CONTEXTO],
+                    fallbacks="default",
+                    # O histórico é nosso (sessões portáveis), não uma thread guardada no servidor da Anthropic.
+                    thread=False,
+                    stream=True,
+                )
+                ultima_parada: str | None = None
+                rodou_ferramentas = False
+                try:
+                    async for stream in runner:
+                        atual = UsoParcial()
+                        async for ev in stream:
+                            atual.ver(ev)
+                            if ev.type == "text":
+                                emitir(("texto", {"delta": ev.text}))
+                        msg = await stream.get_final_message()
+                        atual = None   # daqui em diante quem registra é a mensagem final (sem contar duas vezes)
+                        await registrar(msg.model, msg.usage)
+                        historico.append({"role": "assistant", "content": [b.to_dict() for b in msg.content]})
+                        ultima_parada, rodou_ferramentas = msg.stop_reason, False
+                        if msg.stop_reason == "refusal":
+                            emitir(_erro("Não posso ajudar com esse pedido. Tente reformular."))
+                            break
+                        if msg.stop_reason == "max_tokens":
+                            emitir(_erro("A resposta ficou longa demais e foi cortada. Peça algo mais específico."))
+                            break
+                        # Executa as ferramentas aqui (o runner reaproveita o resultado) para os eventos saírem na
+                        # ordem.
+                        resposta = await runner.generate_tool_call_response()
+                        for evento in eventos.esvaziar():
+                            emitir(evento)
+                        if resposta is not None:
+                            historico.append(resposta)
+                            rodou_ferramentas = True
+                            # Rodada completa (chamada + resultado): grava já. Se a conexão cair depois de uma
+                            # proposta, a próxima pergunta sabe que ela existe e não propõe de novo.
+                            await gravar_historico()
+                    else:
+                        if ultima_parada == "tool_use" and rodou_ferramentas:
+                            # O runner parou em max_iterations: há resultado de ferramenta que o modelo não leu.
+                            emitir(_erro(AVISO_LIMITE_PASSOS))
+                    break
+                except ValueError as e:
+                    if not _json_ilegivel(e):
+                        raise
+                    # JSON de chamada de ferramenta que o SDK não conseguiu ler (entrada em streaming). Não há
+                    # tool_use_id para responder: refaz a volta a partir do histórico espelhado, com limite. A
+                    # tentativa abortada também foi cobrada, e o texto dela já está na tela: a tela tira esse
+                    # texto (evento `descartar`) antes de a nova tentativa escrever de novo.
+                    parcial, atual = atual, None
+                    await registrar_parcial(parcial)
+                    if parcial is not None and parcial.texto:
+                        emitir(("descartar", {"texto": "".join(parcial.texto)}))
+                    repeticoes_json += 1
+                    log.warning("Entrada de ferramenta ilegível; repetindo (%d)", repeticoes_json)
+                    if repeticoes_json > MAX_REPETICOES_JSON:
+                        emitir(_erro("Não consegui concluir agora. Tente de novo."))
+                        break
+                finally:
+                    await runner.close()
+        except asyncio.CancelledError:
+            # Conexão caída ou tempo esgotado no meio de uma resposta: grava o que ela já gastou.
+            parcial, atual = atual, None
+            try:
+                await registrar_parcial(parcial)
+            except asyncio.CancelledError:
+                pass   # cancelada de novo enquanto esperava: a gravação segue na tarefa protegida
+            raise
+
+        if not await gravar_historico():
             # A resposta já foi dada e o consumo já foi gravado; só o histórico desta volta se perde.
-            log.error("Histórico da sessão %s não gravado: %s", sessao.id, e)
-            yield _erro("Não consegui salvar esta parte da conversa; a próxima pergunta pode não lembrar dela.")
-        yield ("fim", {"sessao_id": sessao.id, "uso": {"tokens": total.total, "custo": custo_total}})
+            emitir(_erro("Não consegui salvar esta parte da conversa; a próxima pergunta pode não lembrar dela."))
+        emitir(("fim", {"sessao_id": sessao.id, "uso": {"tokens": total.total, "custo": custo_total}}))
 
     except anthropic.AuthenticationError:
-        yield _erro("A chave da Anthropic desta conta foi recusada." if chave_propria
-                    else "O agente está com problema de configuração. Avise o suporte.")
+        emitir(_erro("A chave da Anthropic desta conta foi recusada." if chave_propria
+                     else "O agente está com problema de configuração. Avise o suporte."))
     except anthropic.RateLimitError:
-        yield _erro("Muitos pedidos ao mesmo tempo. Tente de novo em instantes.")
+        emitir(_erro("Muitos pedidos ao mesmo tempo. Tente de novo em instantes."))
     except anthropic.APIStatusError as e:
         log.error("Erro do modelo: HTTP %s request_id=%s", e.status_code, getattr(e, "request_id", None))
-        yield _erro("O assistente está indisponível agora. Tente de novo em instantes.")
+        emitir(_erro("O assistente está indisponível agora. Tente de novo em instantes."))
     except anthropic.APIConnectionError:
-        yield _erro("Não consegui falar com o assistente agora. Tente de novo em instantes.")
+        emitir(_erro("Não consegui falar com o assistente agora. Tente de novo em instantes."))
     finally:
         if cliente_proprio is not None:
             await cliente_proprio.close()

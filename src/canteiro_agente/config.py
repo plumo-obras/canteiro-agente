@@ -23,6 +23,11 @@ class Config:
     modelo_roteiro: bool = False
     max_tokens: int = 16000
     max_iteracoes: int = 12
+    # Teto da volta inteira (modelo + ferramentas). Abaixo dos 300 s da função da web que faz o proxy do SSE: melhor
+    # um aviso nosso, com o que já foi feito salvo, que a conexão cortada pela Vercel no meio.
+    tempo_max_volta: float = 240.0
+    # Silêncio máximo no SSE antes de um comentário "ping" (proxies derrubam conexão parada).
+    intervalo_ping: float = 15.0
 
     @classmethod
     def do_ambiente(cls) -> "Config":
@@ -32,4 +37,6 @@ class Config:
             token_servico=os.environ.get("TOKEN_SERVICO_AGENTE") or None,
             modelo=os.environ.get("AGENTE_MODELO", MODELO_PADRAO),
             modelo_roteiro=os.environ.get("MODELO_ROTEIRO", "") == "1",
+            tempo_max_volta=float(os.environ.get("AGENTE_TEMPO_MAX_VOLTA", "240")),
+            intervalo_ping=float(os.environ.get("AGENTE_INTERVALO_PING", "15")),
         )

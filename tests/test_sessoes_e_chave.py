@@ -68,8 +68,9 @@ async def test_conversa_grava_so_as_mensagens_novas_na_api(ambiente):
     await amb.conversar("é essa?", sessao_id=sid)
 
     gravacoes = [c.corpo for c in amb.api.chamadas if c.metodo == "POST" and c.caminho.endswith("/mensagens")]
+    # A rodada de ferramenta é gravada assim que fecha (chamada + resultado); o resto no fim da volta.
     assert [(g["seq_inicial"], [m["papel"] for m in g["mensagens"]]) for g in gravacoes] == [
-        (0, ["user", "assistant", "user", "assistant"]), (4, ["user", "assistant"])]
+        (0, ["user", "assistant", "user"]), (3, ["assistant"]), (4, ["user", "assistant"])]
     # O modelo recebeu na 2ª conversa o histórico lido da API, em role/content.
     assert [m["role"] for m in amb.anthropic.pedidos[2]["messages"]] == ["user", "assistant", "user", "assistant", "user"]
     [criacao, *_] = [c.corpo for c in amb.api.chamadas if c.caminho == "/sessoes"]

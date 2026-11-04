@@ -5,6 +5,7 @@
   Runner são os de verdade; só o transporte é falso. Assim o teste cobre o loop real do SDK (chamar ferramenta,
   devolver tool_result, seguir) e não uma imitação dele.
 """
+import asyncio
 import base64
 import json
 from dataclasses import dataclass, field
@@ -184,8 +185,30 @@ def ferramenta(nome: str, entrada: dict[str, Any], id_: str = "toolu_1") -> dict
 
 
 @dataclass
+class Crua:
+    """Resposta montada à mão: pedaços do SSE e, entre eles, pausas (float, em segundos). Serve para o que o roteiro
+    normal não faz: conexão que fica parada no meio (cancelamento, tempo esgotado, ping) e JSON quebrado."""
+    partes: list[str | float]
+
+
+def pausada(r: Resposta, segundos: float, antes_de: str = "message_delta") -> Crua:
+    """A resposta inteira, mas parada `segundos` antes do evento `antes_de` (por padrão: depois do texto, antes de
+    o uso final chegar)."""
+    sse = eventos_sse(r, 0)
+    i = sse.index(f"event: {antes_de}")
+    return Crua([sse[:i], segundos, sse[i:]])
+
+
+def json_ilegivel(texto_antes: str, entrada_entregue: str = "{,") -> Crua:
+    """Texto seguido de uma chamada de ferramenta cujo JSON de entrada (em streaming) o SDK não consegue ler."""
+    r = Resposta([texto(texto_antes), ferramenta("listar_obras", {}, "toolu_quebrado")], stop_reason="tool_use")
+    sse = eventos_sse(r, 0).replace('"partial_json": "{}"', '"partial_json": ' + json.dumps(entrada_entregue))
+    return Crua([sse])
+
+
+@dataclass
 class AnthropicFalsa:
-    roteiro: list[Resposta]
+    roteiro: list[Resposta | Crua]
     pedidos: list[dict[str, Any]] = field(default_factory=list)
     cabecalhos: list[dict[str, str]] = field(default_factory=list)
     chaves: list[str] = field(default_factory=list)
@@ -197,6 +220,8 @@ class AnthropicFalsa:
         if not self.roteiro:
             return httpx2.Response(500, json={"type": "error", "error": {"type": "api_error", "message": "roteiro acabou"}})
         r = self.roteiro.pop(0)
+        if isinstance(r, Crua):
+            return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=_corpo(r.partes))
         return httpx2.Response(200, headers={"content-type": "text/event-stream"},
                                content=eventos_sse(r, len(self.pedidos)).encode())
 
@@ -205,6 +230,14 @@ class AnthropicFalsa:
             api_key=chave, max_retries=0,
             http_client=DefaultAsyncHttpxClient(transport=httpx2.MockTransport(self)),
         )
+
+
+async def _corpo(partes: list[str | float]):
+    for p in partes:
+        if isinstance(p, str):
+            yield p.encode()
+        else:
+            await asyncio.sleep(p)
 
 
 OBRA_EMEI = "obra-emei"

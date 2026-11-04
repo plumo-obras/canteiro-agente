@@ -1,4 +1,6 @@
-"""Serviço HTTP do agente: `POST /conversa` responde em SSE (eventos texto, ferramenta, proposta, fim, erro)."""
+"""Serviço HTTP do agente: `POST /conversa` responde em SSE (eventos texto, descartar, ferramenta, proposta, fim, erro;
+comentário `: ping` nos silêncios)."""
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -12,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from .chaves import FonteChaveApi, SemChaveCliente
 from .config import Config
-from .conversa import Dependencias, Evento, PedidoConversa, conversar
+from .conversa import Dependencias, Evento, PedidoConversa, aguardar_pendentes, conversar
 from .precos import PRECOS
 from .sessoes import SessoesApi
 
@@ -27,6 +29,8 @@ class CorpoConversa(BaseModel):
 
 def formatar_sse(evento: Evento) -> str:
     nome, dados = evento
+    if nome.startswith(":"):
+        return f"{nome}\n\n"   # comentário SSE (o ping): o leitor da web ignora linha que começa com ":"
     return f"event: {nome}\ndata: {json.dumps(dados, ensure_ascii=False)}\n\n"
 
 
@@ -75,6 +79,11 @@ def criar_app(dep: Dependencias | None = None) -> FastAPI:
     async def ciclo(app: FastAPI):
         app.state.dep = dep or dependencias_padrao()
         yield
+        # Consumo de conversa cancelada ainda pode estar a caminho da API: não desliga antes de gravar.
+        try:
+            await asyncio.wait_for(aguardar_pendentes(), 10)
+        except TimeoutError:
+            log.error("Desligando com gravações de consumo pendentes")
         if dep is None:
             await app.state.dep.http_api.aclose()
             if app.state.dep.cliente_plataforma is not None:
