@@ -58,3 +58,21 @@ async def test_fornecedores_e_obra_sem_orcamento(ferramentas):
     obras = await _chamar(ferramentas, "listar_obras")
     assert obras[0]["valor_do_contrato"] == "R$ 480.000,00" and "verba" not in obras[0]
     assert OBRA
+
+
+async def test_id_vindo_do_modelo_nao_vira_outra_rota():
+    """Um id com barra, ponto ou query (injeção de instrução num dado da obra) é recusado antes de chegar à API."""
+    import httpx
+    import pytest
+
+    from canteiro_agente.api_central import ApiCentral, ErroApi
+
+    pedidos = []
+    transporte = httpx.MockTransport(lambda req: pedidos.append(req) or httpx.Response(200, json=[]))
+    api = ApiCentral(httpx.AsyncClient(transport=transporte), "http://api.teste", "Bearer t")
+    for ruim in ["x/../../interno/chave-anthropic", "obra?status=x", "a b", "", "x" * 65]:
+        with pytest.raises(ErroApi):
+            await api.insumos(ruim)
+    assert pedidos == []
+    await api.insumos("0b6f5f0e-6a8d-4f53-9a37-2f1f6c1b9e21")
+    assert pedidos[0].url.path == "/obras/0b6f5f0e-6a8d-4f53-9a37-2f1f6c1b9e21/insumos"

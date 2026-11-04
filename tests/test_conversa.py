@@ -1,5 +1,6 @@
 """POST /conversa de ponta a ponta, com a API central e a Anthropic dubladas."""
 import json
+from dataclasses import replace
 
 from falsos import ACO, OBRA, PED_ACO, PED_CIMENTO, TOKEN_SERVICO, TOKEN_USUARIO, Resposta, ferramenta, texto
 
@@ -268,3 +269,21 @@ async def test_ajuste_leva_o_motivo_como_justificativa(ambiente):
     assert proposta["titulo"] == "Ajustar Aço CA-50 em −12,5 kg"
     assert proposta["justificativa"] == "sobra cortada perdida"
     assert proposta["dados"] == {"insumo_id": ACO, "quantidade": -12_500, "motivo": "sobra cortada perdida"}
+
+
+async def test_modo_roteiro_nao_desconta_credito_nem_usa_a_chave_propria(ambiente):
+    """A demonstração não gasta token: gravar /uso descontaria créditos de verdade, e quem tem chave própria pagaria
+    a Anthropic por uma conversa que devia ser de roteiro."""
+    class Fonte:
+        async def chave_do_cliente(self, autorizacao):
+            raise AssertionError("no roteiro a chave própria não é lida")
+
+    amb = ambiente([Resposta([texto("ok")])])
+    amb.dep.config = replace(amb.dep.config, modelo_roteiro=True)
+    amb.api.creditos = {"saldo_microdolares": 5_000_000, "franquia": 10_000_000, "chave_propria": True}
+    amb.dep.fonte_chave = Fonte()
+    eventos = await amb.conversar("oi")
+    assert amb.anthropic.chaves == ["chave-plataforma"]
+    assert amb.api.feitas("POST", "/uso") == []
+    [(_, fim)] = [(e, d) for e, d in eventos if e == "fim"]
+    assert fim["uso"] == {"custo": 0, "tokens": 0}

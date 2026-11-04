@@ -142,7 +142,9 @@ async def conversar(
         yield _erro("O sistema está fora do ar agora. Tente de novo em instantes.")
         return
 
-    chave_propria = bool(creditos.get("chave_propria"))
+    # Modo roteiro (demonstração): ninguém fala com o modelo de verdade, nem quem tem chave própria.
+    roteiro = dep.config.modelo_roteiro
+    chave_propria = bool(creditos.get("chave_propria")) and not roteiro
     cliente_proprio: AsyncAnthropic | None = None
     if chave_propria:
         chave = await dep.fonte_chave.chave_do_cliente(autorizacao)
@@ -178,6 +180,8 @@ async def conversar(
 
         async def registrar(msg: Any) -> None:
             nonlocal total, custo_total
+            if roteiro:
+                return  # o roteiro não gasta token: gravar /uso descontaria créditos de verdade por respostas grátis
             tokens, custo = medir(dep.config.modelo, msg.model, msg.usage)
             total, custo_total = total + tokens, custo_total + custo
             await _gravar_uso(dep, autorizacao, {

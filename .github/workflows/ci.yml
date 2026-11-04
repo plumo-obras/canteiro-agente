@@ -19,10 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
       - name: testes do agente (sem tokens; o teste com modelo real fica pulado)
         run: |
-          uv venv -p 3.14 .venv
-          uv pip install -p .venv -e ".[dev]"
+          uv sync --frozen --extra dev
           .venv/bin/pytest -q
 
   imagem:
@@ -31,3 +32,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t canteiro-agente .
+      - name: o contêiner sobe e responde /saude
+        run: |
+          docker run -d --name agente -p 8100:8100 -e MODELO_ROTEIRO=1 canteiro-agente
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8100/saude && exit 0; sleep 1; done
+          docker logs agente; exit 1

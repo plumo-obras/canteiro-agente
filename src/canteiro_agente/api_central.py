@@ -3,7 +3,9 @@
 O agente não tem credencial própria para ler ou escrever dado de cliente: tenant e papel são resolvidos pela API a
 cada requisição a partir desse token. O token de serviço só serve para gravar o consumo (`POST /uso`).
 """
+import re
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -17,6 +19,18 @@ class ErroApi(Exception):
         super().__init__(mensagem)
         self.status = status
         self.mensagem = mensagem
+
+
+_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _id(valor: Any) -> str:
+    """Segmento de URL vindo do modelo. Sem isto, um id como "x/../../interno/…" (injeção de instrução escondida num
+    dado da obra) levaria a ferramenta a ler outra rota da API com o token do usuário."""
+    texto = str(valor)
+    if not _ID.fullmatch(texto):
+        raise ErroApi(400, f"Identificador inválido: {texto[:40]!r}.")
+    return quote(texto, safe="")
 
 
 def mensagem_de(resp: httpx.Response) -> str:
@@ -55,31 +69,31 @@ class ApiCentral:
         return await self._req("GET", "/obras")
 
     async def insumos(self, obra_id: str) -> list[dict[str, Any]]:
-        return await self._req("GET", f"/obras/{obra_id}/insumos")
+        return await self._req("GET", f"/obras/{_id(obra_id)}/insumos")
 
     async def movimentos(self, obra_id: str, insumo_id: str, limite: int) -> list[dict[str, Any]]:
         return await self._req(
-            "GET", f"/obras/{obra_id}/insumos/{insumo_id}/movimentos", params={"limite": limite}
+            "GET", f"/obras/{_id(obra_id)}/insumos/{_id(insumo_id)}/movimentos", params={"limite": limite}
         )
 
     async def pedidos(self, obra_id: str, status: str | None = None) -> list[dict[str, Any]]:
         params = {"status": status} if status else None
-        return await self._req("GET", f"/obras/{obra_id}/pedidos", params=params)
+        return await self._req("GET", f"/obras/{_id(obra_id)}/pedidos", params=params)
 
     async def orcamento(self, obra_id: str) -> dict[str, Any]:
-        return await self._req("GET", f"/obras/{obra_id}/orcamento")
+        return await self._req("GET", f"/obras/{_id(obra_id)}/orcamento")
 
     async def etapas(self, obra_id: str) -> list[dict[str, Any]]:
-        return await self._req("GET", f"/obras/{obra_id}/etapas")
+        return await self._req("GET", f"/obras/{_id(obra_id)}/etapas")
 
     async def cronograma(self, obra_id: str) -> dict[str, Any]:
-        return await self._req("GET", f"/obras/{obra_id}/cronograma")
+        return await self._req("GET", f"/obras/{_id(obra_id)}/cronograma")
 
     async def fornecedores(self) -> list[dict[str, Any]]:
         return await self._req("GET", "/fornecedores")
 
     async def recebimentos(self, pedido_id: str) -> list[dict[str, Any]]:
-        return await self._req("GET", f"/pedidos/{pedido_id}/recebimentos")
+        return await self._req("GET", f"/pedidos/{_id(pedido_id)}/recebimentos")
 
     async def criar_proposta(self, corpo: dict[str, Any]) -> dict[str, Any]:
         return await self._req("POST", "/propostas", json=corpo)
