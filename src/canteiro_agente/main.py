@@ -23,8 +23,9 @@ log = logging.getLogger("canteiro_agente")
 
 class CorpoConversa(BaseModel):
     texto: str = Field(min_length=1, max_length=8000)
-    sessao_id: str | None = None
-    obra_id: str | None = None
+    # Os ids seguem o formato de `api_central._ID` (até 64): sem teto, um corpo enorme iria parar na API e no histórico.
+    sessao_id: str | None = Field(default=None, max_length=64)
+    obra_id: str | None = Field(default=None, max_length=64)
 
 
 def formatar_sse(evento: Evento) -> str:

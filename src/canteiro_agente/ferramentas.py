@@ -234,7 +234,8 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         if busca:
             alvo = _sem_acento(busca)
             itens = [i for i in itens if alvo in _sem_acento(i["insumo"]["nome"])]
-        return _json({"obra_id": obra_id, "fonte": "almoxarifado da obra", "insumos": [_item_estoque(i) for i in itens]})
+        return _json({"obra_id": obra_id, "fonte": "almoxarifado da obra",
+                      "insumos": [_item_estoque(i) for i in itens]})
 
     @beta_async_tool(eager_input_streaming=True)
     async def historico_movimentos(obra_id: str, insumo_id: str, limite: int = 20) -> str:

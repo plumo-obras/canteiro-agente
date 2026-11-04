@@ -1,0 +1,28 @@
+# Atualizações semanais em PR, que passam pelo CI antes do merge. Minor e patch vêm agrupados num PR por ecossistema;
+# major vem sozinho, para ser lido com calma.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      imagens:
+        update-types: [minor, patch]
+
+  # O canteiro-dominio (fonte git por tag) não entra aqui: a versão nova do domínio se sobe à mão (ver README).
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        update-types: [minor, patch]

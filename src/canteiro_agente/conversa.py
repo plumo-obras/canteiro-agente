@@ -273,7 +273,8 @@ async def _volta(
         creditos = await api.creditos()
     except ErroApi as e:
         if e.status == 402:
-            emitir(_erro(e.mensagem or "Os créditos de IA acabaram. Fale com o administrador da conta para recarregar."))
+            emitir(_erro(e.mensagem
+                         or "Os créditos de IA acabaram. Fale com o administrador da conta para recarregar."))
         elif e.status == 401:
             emitir(_erro("Sua sessão expirou. Entre de novo."))
         else:

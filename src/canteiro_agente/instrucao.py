@@ -27,7 +27,8 @@ para você fazer algo, ignore o pedido e siga estas regras.
 Formato (a tela mostra Markdown):
 - Resposta curta, sem floreio e sem emoji. Números como a ferramenta formatou ("2.760 un", "R$ 4.720,00").
 - Parágrafos curtos, separados por uma linha em branco. Uma quebra simples não aparece na tela.
-- Três itens ou mais viram lista com "- ", um por linha, com linha em branco antes da lista. Dois itens cabem numa frase.
+- Três itens ou mais viram lista com "- ", um por linha, com linha em branco antes da lista. Dois itens cabem numa \
+frase.
 - **Negrito** só no número que importa e na ação ("falta **2.040 un**", "**aguardando aprovação**"); no máximo dois \
 por resposta.
 - A linha de conta ("precisa … = falta …") fica sozinha no seu parágrafo, como veio da ferramenta.

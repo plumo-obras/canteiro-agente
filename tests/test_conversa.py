@@ -2,6 +2,8 @@
 import json
 from dataclasses import replace
 
+import pytest
+
 from falsos import ACO, OBRA, PED_ACO, PED_CIMENTO, TOKEN_SERVICO, TOKEN_USUARIO, Resposta, ferramenta, texto
 
 FERRAMENTAS = {
@@ -34,7 +36,8 @@ async def test_consulta_chama_a_ferramenta_certa_com_o_token_do_usuario(ambiente
     nomes = [e for e, _ in eventos]
     assert nomes[0] == "texto" and nomes[-1] == "fim"
     ferr = [d for e, d in eventos if e == "ferramenta"]
-    assert ferr == [{"nome": "consultar_estoque", "nivel": "consulta", "resumo": "consultou o almoxarifado (busca: aco)"}]
+    assert ferr == [{"nome": "consultar_estoque", "nivel": "consulta",
+                     "resumo": "consultou o almoxarifado (busca: aco)"}]
     texto_total = "".join(d["delta"] for e, d in eventos if e == "texto")
     assert "Vou olhar o estoque." in texto_total and "falta 0 kg" in texto_total
 
@@ -247,6 +250,7 @@ async def test_recusa_do_modelo_vira_erro_amigavel(ambiente):
 
 async def test_sem_login_nao_abre_conversa(ambiente):
     import httpx
+
     from canteiro_agente.main import criar_app
 
     amb = ambiente([])
@@ -255,6 +259,21 @@ async def test_sem_login_nao_abre_conversa(ambiente):
         resp = await c.post("/conversa", json={"texto": "oi"})
     assert resp.status_code == 401
     assert amb.api.chamadas == []
+
+
+@pytest.mark.parametrize("campo", ["sessao_id", "obra_id"])
+async def test_id_comprido_demais_e_recusado_antes_de_tudo(ambiente, campo):
+    import httpx
+
+    from canteiro_agente.main import criar_app
+
+    amb = ambiente([])
+    app = criar_app(amb.dep)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://agente") as c:
+        resp = await c.post("/conversa", json={"texto": "oi", campo: "x" * 65},
+                            headers={"Authorization": TOKEN_USUARIO})
+    assert resp.status_code == 422
+    assert amb.api.chamadas == [] and amb.anthropic.pedidos == []
 
 
 async def test_ajuste_leva_o_motivo_como_justificativa(ambiente):

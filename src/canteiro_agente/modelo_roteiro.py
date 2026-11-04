@@ -29,7 +29,6 @@ from fastapi.responses import JSONResponse, Response
 
 from canteiro_dominio.tipos import fmt_qtd
 
-
 # ---------------------------------------------------------------- formato da API (SSE e JSON)
 
 @dataclass
@@ -89,7 +88,8 @@ def eventos_sse(r: Resposta, n: int) -> str:
             partes.append(_sse("content_block_start", {"index": i, "content_block": {"type": "text", "text": ""}}))
             meio = len(b["text"]) // 2
             for pedaco in (b["text"][:meio], b["text"][meio:]):
-                partes.append(_sse("content_block_delta", {"index": i, "delta": {"type": "text_delta", "text": pedaco}}))
+                partes.append(_sse("content_block_delta",
+                                   {"index": i, "delta": {"type": "text_delta", "text": pedaco}}))
         else:
             partes.append(_sse("content_block_start", {"index": i, "content_block": {
                 "type": "tool_use", "id": b["id"], "name": b["name"], "input": {}}}))
@@ -221,7 +221,8 @@ def roteiro(conv: Conversa) -> list[dict[str, Any]]:
     busca = {"blocos": "bloco", "cimento": "cimento", "aco": "aço"}[alvo]
     estoque = conv.resultado("consultar_estoque")
     if estoque is None:
-        return [antes_de_ferramenta("Vou conferir o almoxarifado."), ferramenta("consultar_estoque", {"obra_id": obra, "busca": busca})]
+        return [antes_de_ferramenta("Vou conferir o almoxarifado."),
+                ferramenta("consultar_estoque", {"obra_id": obra, "busca": busca})]
     if not estoque["insumos"]:
         return [texto(f"Não achei {busca} no almoxarifado desta obra.")]
     item = estoque["insumos"][0]

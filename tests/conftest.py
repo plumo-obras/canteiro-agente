@@ -12,6 +12,7 @@ from canteiro_agente.config import Config  # noqa: E402
 from canteiro_agente.conversa import Dependencias  # noqa: E402
 from canteiro_agente.main import criar_app  # noqa: E402
 from canteiro_agente.sessoes import SessoesEmMemoria  # noqa: E402
+
 from falsos import TOKEN_SERVICO, TOKEN_USUARIO, AnthropicFalsa, ApiFalsa  # noqa: E402
 
 
@@ -21,7 +22,8 @@ class Ambiente:
         self.api = ApiFalsa()
         self.anthropic = AnthropicFalsa(roteiro)
         self.dep = Dependencias(
-            config=Config(api_url="http://api.teste", anthropic_api_key="chave-plataforma", token_servico=TOKEN_SERVICO),
+            config=Config(api_url="http://api.teste", anthropic_api_key="chave-plataforma",
+                          token_servico=TOKEN_SERVICO),
             http_api=self.api.cliente(),
             sessoes=SessoesEmMemoria(),
             fonte_chave=SemChaveCliente(),
@@ -42,7 +44,7 @@ class Ambiente:
             if bloco.startswith(":"):
                 self.comentarios.append(bloco)   # ping: comentário SSE, não é evento
                 continue
-            linhas = dict(l.split(": ", 1) for l in bloco.splitlines())
+            linhas = dict(linha.split(": ", 1) for linha in bloco.splitlines())
             eventos.append((linhas["event"], json.loads(linhas["data"])))
         return eventos
 

@@ -21,7 +21,9 @@ class Config:
     modelo: str = MODELO_PADRAO
     # Demo hospedada sem chave: o modelo falso roda dentro do próprio processo (0 tokens, nada é cobrado da Anthropic).
     modelo_roteiro: bool = False
-    max_tokens: int = 16000
+    # Teto, não custo: cobra-se o que sai. Com thinking adaptativo o raciocínio conta dentro dele, e um teto curto
+    # corta a resposta no meio (stop_reason max_tokens). Com stream=True o SDK aceita teto alto sem estourar timeout.
+    max_tokens: int = 64000
     max_iteracoes: int = 12
     # Teto da volta inteira (modelo + ferramentas). Abaixo dos 300 s da função da web que faz o proxy do SSE: melhor
     # um aviso nosso, com o que já foi feito salvo, que a conexão cortada pela Vercel no meio.
@@ -30,7 +32,7 @@ class Config:
     intervalo_ping: float = 15.0
 
     @classmethod
-    def do_ambiente(cls) -> "Config":
+    def do_ambiente(cls) -> Config:
         return cls(
             api_url=os.environ.get("API_URL", "http://localhost:8000").rstrip("/"),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,

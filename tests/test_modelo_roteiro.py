@@ -6,6 +6,7 @@ import pytest
 from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
 
 from canteiro_agente.modelo_roteiro import criar_app, intencao
+
 from falsos import OBRA
 
 

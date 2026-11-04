@@ -8,8 +8,13 @@ import pytest
 
 from canteiro_agente import conversa as mod
 from canteiro_agente.conversa import (
-    AVISO_LIMITE_PASSOS, AVISO_TEMPO, PedidoConversa, aguardar_pendentes, conversar,
+    AVISO_LIMITE_PASSOS,
+    AVISO_TEMPO,
+    PedidoConversa,
+    aguardar_pendentes,
+    conversar,
 )
+
 from falsos import OBRA, TOKEN_USUARIO, Resposta, ferramenta, json_ilegivel, pausada, texto
 
 PROPOSTA_CIMENTO = {

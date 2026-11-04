@@ -10,6 +10,8 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Actions por SHA de commit (tag de action é móvel: quem controla o repositório dela muda o código sob a mesma tag).
+# O comentário diz a versão; o Dependabot atualiza os dois juntos.
 permissions:
   contents: read
 
@@ -17,20 +19,22 @@ jobs:
   agente:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           enable-cache: true
       - name: testes do agente (sem tokens; o teste com modelo real fica pulado)
         run: |
           uv sync --frozen --extra dev
           .venv/bin/pytest -q
+      - name: lint
+        run: .venv/bin/ruff check src tests
 
   imagem:
     # Garante que o Dockerfile que o Render usa continua compilando.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: docker build -t canteiro-agente .
       - name: o contêiner sobe e responde /saude
         run: |

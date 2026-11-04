@@ -3,11 +3,12 @@ import json
 
 import pytest
 from anthropic.lib.tools import ToolError
-from falsos import CIMENTO, OBRA, TOKEN_USUARIO, ApiFalsa
-from falsos import OBRA_EMEI as EMEI
 
 from canteiro_agente.api_central import ApiCentral
 from canteiro_agente.ferramentas import Eventos, criar_ferramentas
+
+from falsos import CIMENTO, OBRA, TOKEN_USUARIO, ApiFalsa
+from falsos import OBRA_EMEI as EMEI
 
 
 @pytest.fixture

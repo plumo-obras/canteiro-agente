@@ -6,7 +6,7 @@ Fonte: tabela pública da Anthropic (out/2026). Escrita de cache com TTL de 5 mi
 Modelos de fallback entram aqui porque uma recusa resgatada é cobrada no preço do modelo que respondeu.
 """
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 
@@ -45,7 +45,7 @@ class Tokens:
     cache_leitura: int = 0
     cache_escrita: int = 0
 
-    def __add__(self, o: "Tokens") -> "Tokens":
+    def __add__(self, o: Tokens) -> Tokens:
         return Tokens(
             self.entrada + o.entrada,
             self.saida + o.saida,

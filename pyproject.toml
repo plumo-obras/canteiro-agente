@@ -9,11 +9,14 @@ dependencies = [
     "fastapi>=0.120",
     "uvicorn>=0.38",
     "httpx>=0.28",
+    # O modo roteiro (main.py) monta o transporte ASGI com o httpx2, que é o httpx por baixo do SDK da Anthropic.
+    # Vinha só de carona no anthropic: importado direto, tem de estar declarado.
+    "httpx2>=2.16",
     "tzdata",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=1.2"]
+dev = ["pytest>=8", "pytest-asyncio>=1.2", "ruff>=0.14"]
 
 [tool.uv.sources]
 # o domínio mora no canteiro-api; versão pela tag, commit travado no uv.lock (cópia local: ver README)
@@ -25,6 +28,19 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/canteiro_agente"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["canteiro_agente", "canteiro_dominio"]
+# Dublês de tests/ (importados pelo sys.path do conftest): seção própria, depois do código do projeto.
+known-local-folder = ["falsos"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

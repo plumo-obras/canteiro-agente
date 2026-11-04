@@ -19,7 +19,6 @@ from canteiro_agente.modelo_roteiro import Resposta, eventos_sse, texto  # noqa:
 from canteiro_agente.modelo_roteiro import ferramenta as _ferramenta
 
 
-
 def _b64(d: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
 
@@ -218,7 +217,8 @@ class AnthropicFalsa:
         self.cabecalhos.append(dict(req.headers))
         self.chaves.append(req.headers.get("x-api-key") or req.headers.get("authorization", "").removeprefix("Bearer "))
         if not self.roteiro:
-            return httpx2.Response(500, json={"type": "error", "error": {"type": "api_error", "message": "roteiro acabou"}})
+            return httpx2.Response(500, json={"type": "error",
+                                              "error": {"type": "api_error", "message": "roteiro acabou"}})
         r = self.roteiro.pop(0)
         if isinstance(r, Crua):
             return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=_corpo(r.partes))
@@ -267,7 +267,8 @@ CRONOGRAMA_EMEI = {
     "etapas": [], "medicoes": [{"numero": 1, "mes": "2026-11", "valor": 7876733, "pct_obra_acumulado": 376,
                                 "observacao": ""}],
     "mensal": [{"mes": "2026-11", "previsto": 8505000, "previsto_acumulado": 8505000, "pct_previsto_acumulado": 406,
-                "medido": 7876733, "medido_acumulado": 7876733, "pct_medido_acumulado": 376, "pct_base_acumulado": 406}],
+                "medido": 7876733, "medido_acumulado": 7876733, "pct_medido_acumulado": 376,
+                "pct_base_acumulado": 406}],
     "prazo": {"termino_contratual": "2027-09", "termino_projetado": "2027-09", "atraso_meses": 0, "atraso_decimos": 0,
               "pct_previsto_na_medicao": 406, "pct_medido": 376, "mes_referencia": "2026-11",
               "termino_base": "2027-08", "atraso_base_meses": 1, "atraso_base_decimos": 5},

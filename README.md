@@ -16,6 +16,11 @@ Mexendo no domínio ao mesmo tempo (canteiro-api clonado ao lado), use a cópia 
 uv pip install -p .venv --no-sources -e ../canteiro-api/dominio -e ".[dev]"
 ```
 
+Versão nova do domínio (tag `dominio-vX.Y.Z` publicada no canteiro-api): o Dependabot não acompanha fonte git por
+tag, então é à mão. Troque o `tag` em `[tool.uv.sources]` no `pyproject.toml` e rode `uv lock` (trava o commit novo
+no `uv.lock`); depois `uv sync --frozen --extra dev`, `.venv/bin/pytest` e PR. Tags existentes:
+`git ls-remote --tags https://github.com/plumo-obras/canteiro-api 'dominio-v*'`.
+
 Em contêiner: `docker build -t canteiro-agente . && docker run --env-file .env -p 8100:8100 canteiro-agente`. O produto
 inteiro sobe pelo `docker-compose.completo.yml` do canteiro-api.
 

@@ -5,6 +5,7 @@ import pytest
 
 from canteiro_agente.chaves import FonteChaveApi
 from canteiro_agente.sessoes import HistoricoDivergiu, SessaoDeOutro, SessoesApi
+
 from falsos import OBRA, TOKEN_OUTRO, TOKEN_SERVICO, TOKEN_USUARIO, ApiFalsa, Resposta, ferramenta, texto
 
 
@@ -72,7 +73,8 @@ async def test_conversa_grava_so_as_mensagens_novas_na_api(ambiente):
     assert [(g["seq_inicial"], [m["papel"] for m in g["mensagens"]]) for g in gravacoes] == [
         (0, ["user", "assistant", "user"]), (3, ["assistant"]), (4, ["user", "assistant"])]
     # O modelo recebeu na 2ª conversa o histórico lido da API, em role/content.
-    assert [m["role"] for m in amb.anthropic.pedidos[2]["messages"]] == ["user", "assistant", "user", "assistant", "user"]
+    papeis = [m["role"] for m in amb.anthropic.pedidos[2]["messages"]]
+    assert papeis == ["user", "assistant", "user", "assistant", "user"]
     [criacao, *_] = [c.corpo for c in amb.api.chamadas if c.caminho == "/sessoes"]
     assert criacao["titulo"] == "quais obras?" and criacao["obra_id"] == OBRA
 

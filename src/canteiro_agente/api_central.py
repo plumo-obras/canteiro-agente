@@ -92,9 +92,6 @@ class ApiCentral:
     async def fornecedores(self) -> list[dict[str, Any]]:
         return await self._req("GET", "/fornecedores")
 
-    async def recebimentos(self, pedido_id: str) -> list[dict[str, Any]]:
-        return await self._req("GET", f"/pedidos/{_id(pedido_id)}/recebimentos")
-
     async def criar_proposta(self, corpo: dict[str, Any]) -> dict[str, Any]:
         return await self._req("POST", "/propostas", json=corpo)
 
