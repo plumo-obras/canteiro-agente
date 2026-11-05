@@ -39,6 +39,15 @@ o que pode propor, quanto custa e como sabemos se ficou bom. Código vem depois 
 - **Eventos de domínio:** a API grava na outbox `pedido.*`, `estoque.*`, `cronograma.salvo`, `medicao.criada`,
   `orcamento.*`, `proposta.*`, `registro.desfeito`, `obra.criada`. **Ninguém consome** (sem relay em produção).
 - **Modo roteiro** (`MODELO_ROTEIRO=1`): responde sem modelo, para demonstração; não grava uso.
+- **Leitura de comprovante de gasto** (`POST /leituras/comprovante {comprovante_id}`, JSON, com o token do usuário):
+  um fluxo fixo, sem ferramentas. Confere créditos (sem saldo não chama o modelo), busca na API o comprovante, o
+  arquivo, a árvore de gastos da obra e a obra, e faz **uma** chamada ao Claude (`beta.messages.create`, saída
+  estruturada com o esquema `LeituraComprovante` do domínio, `fallbacks="default"`, esforço `medium`, 120 s e uma
+  repetição). Cache em dois blocos: instrução + etapas fixas (iguais para todo cliente) e a obra. O consumo é gravado
+  **antes** de validar a resposta (JSON cortado ou fora do esquema também foi pago). A leitura, ou o erro em frase
+  para a pessoa, vai para `PUT /interno/comprovantes/{id}/leitura` (token de serviço + token do usuário). É sugestão:
+  o gasto só nasce quando uma pessoa confirma na revisão, na API. Um comprovante por vez (trava no processo); foto
+  acima do limite do modelo não é enviada. Contrato em `docs/contrato.md` do canteiro-api ("Gastos da obra").
 
 O agente hoje só reage a quem pergunta. Os trabalhos 2 a 4 abaixo são o que falta para ele "existir" no dia a dia.
 
@@ -95,7 +104,7 @@ Falta: memória de longo prazo, medição real de custo e uma avaliação.
 | Saída | Proposta de recebimento (`avancar_pedido` com quantidades e NF) ou de saída do almoxarifado |
 | Autonomia | Divergência de quantidade, preço ou item sem correspondência nunca vira proposta direta: vira pergunta ao responsável |
 | Esforço | `medium` |
-| Dependências | Canal de entrada (upload na tela primeiro; WhatsApp depois) e armazenamento de arquivos |
+| Dependências | Canal de entrada (upload na tela primeiro; WhatsApp depois). O upload e o armazenamento já existem para o comprovante de gasto (§2); o recebimento de pedido por foto/NF reaproveita os dois |
 | Como medimos | NF-e e fotos reais anonimizadas, com o recebimento esperado |
 
 ## 4. Gatilhos e execução sem usuário
@@ -114,7 +123,7 @@ cron (6h30) ────────┘
 - **Identidade sem usuário (decisão de segurança, §9):** a tarefa não tem o token de ninguém. Proposta: a API emite
   um **token de tarefa** curto, assinado, preso a uma construtora e uma obra, com escopo "ler + propor + notificar",
   e o agente usa esse token nas ferramentas como hoje usa o do usuário. O token de serviço continua servindo só para
-  `/uso` e para emitir esses tokens. Nada de token de serviço com acesso a dado de cliente.
+  `/uso`, para gravar a leitura de um comprovante (sempre junto com o token de quem pediu) e para emitir esses tokens. Nada de token de serviço com acesso a dado de cliente.
 - **Créditos:** antes de rodar, a tarefa confere crédito como a conversa; sem crédito, não roda e registra o motivo.
 
 ## 5. Memória

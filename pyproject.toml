@@ -20,7 +20,7 @@ dev = ["pytest>=8", "pytest-asyncio>=1.2", "ruff>=0.14"]
 
 [tool.uv.sources]
 # o domínio mora no canteiro-api; versão pela tag, commit travado no uv.lock (cópia local: ver README)
-canteiro-dominio = { git = "https://github.com/plumo-obras/canteiro-api", tag = "dominio-v0.3.0", subdirectory = "dominio" }
+canteiro-dominio = { git = "https://github.com/plumo-obras/canteiro-api", tag = "dominio-v0.4.0", subdirectory = "dominio" }
 
 [build-system]
 requires = ["hatchling"]
