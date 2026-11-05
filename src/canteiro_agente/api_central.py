@@ -1,7 +1,8 @@
 """Cliente da API central. Toda chamada de dado de cliente vai com o token de quem está conversando.
 
 O agente não tem credencial própria para ler ou escrever dado de cliente: tenant e papel são resolvidos pela API a
-cada requisição a partir desse token. O token de serviço só serve para gravar o consumo (`POST /uso`).
+cada requisição a partir desse token. O token de serviço só serve para gravar o consumo (`POST /uso`) e a leitura de um
+comprovante (`PUT /interno/comprovantes/{id}/leitura`), sempre junto com o token do usuário.
 """
 import re
 from typing import Any
@@ -74,7 +75,7 @@ class ApiCentral:
         # mais uma chamada ao modelo que só tentaria de novo contra a API caída.
         self.fora_do_ar = False
 
-    async def _req(self, metodo: str, caminho: str, **kw: Any) -> Any:
+    async def _resp(self, metodo: str, caminho: str, **kw: Any) -> httpx.Response:
         try:
             resp = await self._http.request(
                 metodo, self._base + caminho, headers={"Authorization": self._autorizacao}, **kw
@@ -87,6 +88,10 @@ class ApiCentral:
             raise ApiForaDoAr(f"HTTP {resp.status_code}")
         if resp.status_code >= 400:
             raise ErroApi(resp.status_code, mensagem_de(resp))
+        return resp
+
+    async def _req(self, metodo: str, caminho: str, **kw: Any) -> Any:
+        resp = await self._resp(metodo, caminho, **kw)
         return resp.json() if resp.content else None
 
     async def creditos(self) -> dict[str, Any]:
@@ -129,6 +134,15 @@ class ApiCentral:
     async def criar_proposta(self, corpo: dict[str, Any]) -> dict[str, Any]:
         return await self._req("POST", "/propostas", json=corpo)
 
+    async def comprovante(self, comprovante_id: str) -> dict[str, Any]:
+        return await self._req("GET", f"/comprovantes/{_id(comprovante_id)}")
+
+    async def arquivo_do_comprovante(self, comprovante_id: str) -> bytes:
+        return (await self._resp("GET", f"/comprovantes/{_id(comprovante_id)}/arquivo")).content
+
+    async def arvore(self, obra_id: str) -> list[dict[str, Any]]:
+        return await self._req("GET", f"/obras/{_id(obra_id)}/arvore")
+
 
 async def registrar_uso(
     http: httpx.AsyncClient, base_url: str, token_servico: str, autorizacao_usuario: str, uso: dict[str, Any]
@@ -141,3 +155,18 @@ async def registrar_uso(
     )
     if resp.status_code >= 400:
         raise ErroApi(resp.status_code, mensagem_de(resp))
+
+
+async def gravar_leitura(
+    http: httpx.AsyncClient, base_url: str, token_servico: str, autorizacao_usuario: str, comprovante_id: str,
+    corpo: dict[str, Any],
+) -> dict[str, Any]:
+    """`PUT /interno/comprovantes/{id}/leitura`: só o serviço grava leitura, agindo pelo usuário do cabeçalho."""
+    resp = await http.put(
+        f"{base_url.rstrip('/')}/interno/comprovantes/{_id(comprovante_id)}/leitura",
+        json=corpo,
+        headers={"Authorization": f"Bearer {token_servico}", CABECALHO_USUARIO: autorizacao_usuario},
+    )
+    if resp.status_code >= 400:
+        raise ErroApi(resp.status_code, mensagem_de(resp))
+    return resp.json()

@@ -13,7 +13,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from .api_central import FORA_DO_AR, ApiForaDoAr, ErroApi
 from .chaves import FonteChaveApi, SemChaveCliente
+from .comprovantes import ler_comprovante
 from .config import Config
 from .conversa import Dependencias, Evento, PedidoConversa, aguardar_pendentes, conversar
 from .precos import PRECOS
@@ -29,11 +31,16 @@ class CorpoConversa(BaseModel):
     obra_id: str | None = Field(default=None, max_length=64)
 
 
+class CorpoLeitura(BaseModel):
+    comprovante_id: str = Field(min_length=1, max_length=64)
+
+
 # Mensagem por campo do corpo: a tela mostra o `detail` como veio, então ele tem de ser frase, não a lista do Pydantic.
 _CAMPOS = {
     "texto": "A pergunta tem de ter de 1 a 8.000 caracteres.",
     "sessao_id": "Identificador de conversa inválido.",
     "obra_id": "Identificador de obra inválido.",
+    "comprovante_id": "Identificador de comprovante inválido.",
 }
 
 
@@ -126,6 +133,20 @@ def criar_app(dep: Dependencias | None = None) -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/leituras/comprovante")
+    async def leitura_comprovante(corpo: CorpoLeitura, authorization: str | None = Header(default=None)):
+        """Lê o comprovante com IA e grava a leitura na API. Responde quando terminou (dezenas de segundos): a tela
+        mostra "lendo…" e depois abre a revisão. Falha de leitura volta 200 com `ok: false`: ela já está gravada."""
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(401, "Faça login para continuar.")
+        try:
+            return await ler_comprovante(app.state.dep, authorization, corpo.comprovante_id)
+        except ApiForaDoAr:
+            return JSONResponse(status_code=503, content={"detail": FORA_DO_AR})
+        except ErroApi as e:
+            status = e.status if e.status in (401, 403, 404, 409) else 502
+            return JSONResponse(status_code=status, content={"detail": e.mensagem})
 
     @app.get("/saude")
     async def saude():
