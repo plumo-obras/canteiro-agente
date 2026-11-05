@@ -82,14 +82,17 @@ def test_api_central_nao_tem_outro_caminho_de_requisicao():
     arvore = ast.parse(fonte)
     usos_http = [n for n in ast.walk(arvore)
                  if isinstance(n, ast.Attribute) and n.attr == "_http" and isinstance(n.ctx, ast.Load)]
-    # Um uso só: dentro de `_req`, que todo método público atravessa.
+    # Um uso só: dentro de `_resp`, que todo método público atravessa (direto ou por `_req`).
     assert len(usos_http) == 1
+    # o `_req` repassa ao `_resp` o método que recebeu: o que se confere são as chamadas dos métodos públicos
+    req = next(n for n in ast.walk(arvore) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_req")
+    de_dentro = {id(n) for n in ast.walk(req)}
     chamadas_req = [n for n in ast.walk(arvore) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-                    and n.func.attr == "_req"]
+                    and n.func.attr in ("_req", "_resp") and id(n) not in de_dentro]
     for c in chamadas_req:
         metodo, caminho = c.args[0], c.args[1]
         assert isinstance(metodo, ast.Constant) and metodo.value in {"GET", "POST"}, \
-            f"linha {c.lineno}: o método passado a _req tem de ser literal, GET ou POST"
+            f"linha {c.lineno}: o método passado a _req/_resp tem de ser literal, GET ou POST"
         if metodo.value == "POST":
             assert isinstance(caminho, ast.Constant) and caminho.value == "/propostas", \
                 f"linha {c.lineno}: POST fora de /propostas"
@@ -125,3 +128,22 @@ async def test_cada_ferramenta_so_escreve_por_proposta(nome):
     else:
         assert escritas == [("POST", "/propostas")]
         assert [n for n, _ in eventos.pendentes].count("proposta") == 1
+
+
+def test_escritas_fora_do_api_central_sao_so_consumo_e_leitura():
+    """Fora do ApiCentral (token do usuário), o agente só escreve com o token de serviço em duas rotas: o livro de
+    consumo e a leitura de um comprovante (que é sugestão: o gasto nasce na confirmação de uma pessoa)."""
+    from canteiro_agente import api_central
+
+    arvore = ast.parse(inspect.getsource(api_central))
+    escritoras = {}
+    for f in arvore.body:
+        if not isinstance(f, ast.AsyncFunctionDef):
+            continue
+        metodos = {n.func.attr for n in ast.walk(f) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                   and n.func.attr in {"post", "put", "patch", "delete", "request"}}
+        if metodos:
+            escritoras[f.name] = metodos
+    assert escritoras == {"registrar_uso": {"post"}, "gravar_leitura": {"put"}}
+    fonte = inspect.getsource(api_central.gravar_leitura)
+    assert "/interno/comprovantes/" in fonte and "/leitura" in fonte
