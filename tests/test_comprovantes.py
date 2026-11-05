@@ -23,6 +23,7 @@ from canteiro_agente.comprovantes import (
     INSTRUCAO_LEITURA,
     LENDO,
     _lendo,
+    contexto_da_obra,
     pedido_de_leitura,
 )
 from canteiro_agente.config import Config
@@ -33,6 +34,18 @@ from canteiro_agente.sessoes import SessoesEmMemoria
 from falsos import TOKEN_SERVICO, TOKEN_USUARIO
 
 FOTO = b"\xff\xd8\xff\xe0foto do pix"
+# como a API devolve `GET /obras/{id}/arvore` numa obra sem orçamento (lista padrão) e numa com orçamento
+ARVORE_PADRAO = [
+    {"chave": "eletrica", "nome": "Instalações elétricas", "inclui": "", "fixa": True, "origem": "padrao",
+     "topicos": [{"id": "t1", "nome": "Quadro geral"}]},
+    {"chave": "x-e1", "nome": "Muro de arrimo", "inclui": "", "fixa": False, "origem": "extra", "topicos": []},
+]
+ARVORE_ORCAMENTO = [
+    {"chave": "3", "nome": "3 FUNDAÇÕES", "inclui": "", "fixa": True, "origem": "orcamento", "topicos": []},
+    {"chave": "18", "nome": "18 INSTALAÇÃO ELÉTRICA - 220V", "inclui": "", "fixa": True, "origem": "orcamento",
+     "topicos": [{"id": "t1", "nome": "Quadro geral"}]},
+    {"chave": "x-e1", "nome": "Taxas", "inclui": "", "fixa": False, "origem": "extra", "topicos": []},
+]
 LEITURA = {
     "tipo_documento": "comprovante_pix", "situacao_pagamento": "pago",
     "valor": {"certeza": "alta", "opcoes": [{"valor": "350,00", "motivo": "valor do Pix"}]},
@@ -54,6 +67,7 @@ class Api:
     tipo: str = "image/jpeg"
     legenda: str = "eletricista, quadro"
     arquivo: bytes = FOTO
+    arvore: list[dict[str, Any]] = field(default_factory=lambda: ARVORE_PADRAO)
     gravadas: list[dict[str, Any]] = field(default_factory=list)
     usos: list[dict[str, Any]] = field(default_factory=list)
     cabecalhos_internos: list[dict[str, str]] = field(default_factory=list)
@@ -73,11 +87,7 @@ class Api:
         if p == "/comprovantes/c1/arquivo":
             return httpx.Response(200, content=self.arquivo, headers={"content-type": self.tipo})
         if p == "/obras/o1/arvore":
-            return httpx.Response(200, json=[
-                {"chave": "eletrica", "nome": "Instalações elétricas", "inclui": "", "fixa": True,
-                 "topicos": [{"id": "t1", "nome": "Quadro geral"}]},
-                {"chave": "x-e1", "nome": "Muro de arrimo", "inclui": "", "fixa": False, "topicos": []},
-            ])
+            return httpx.Response(200, json=self.arvore)
         if p == "/obras":
             return httpx.Response(200, json=[{"id": "o1", "nome": "Edifício Teste", "cidade": "Juiz de Fora",
                                               "uf": "MG", "tipologia": "predio"}])
@@ -167,6 +177,29 @@ def test_instrucao_traz_todas_as_etapas_fixas_e_e_estavel():
     # o bloco é o mesmo em toda chamada (é o que fica em cache): nada de data, obra ou usuário dentro dele
     assert "pessoal | Pessoal e encargos" in INSTRUCAO_LEITURA and "outros | Outros" in INSTRUCAO_LEITURA
     assert "Edifício" not in INSTRUCAO_LEITURA
+
+
+async def test_obra_com_orcamento_manda_as_etapas_dele_no_bloco_da_obra():
+    api, claude = Api(arvore=ARVORE_ORCAMENTO), Claude()
+    r = await _ler(api, claude)
+    assert r.status_code == 200, r.text
+    instrucao, contexto = claude.pedidos[0]["system"]
+    # o primeiro bloco não muda com a obra (cache); as etapas do orçamento vão no segundo, com as extras e os tópicos
+    assert instrucao["text"] == INSTRUCAO_LEITURA
+    texto = contexto["text"]
+    assert "Esta obra tem orçamento" in texto
+    assert "3 | 3 FUNDAÇÕES" in texto and "18 | 18 INSTALAÇÃO ELÉTRICA - 220V" in texto
+    assert "x-e1 | Taxas" in texto and "18 | t1 | Quadro geral" in texto
+    assert "eletrica" not in texto and "18 INSTALAÇÃO" not in INSTRUCAO_LEITURA
+
+
+def test_bloco_da_obra_sem_orcamento_aponta_a_lista_padrao():
+    texto = contexto_da_obra(None, ARVORE_PADRAO)
+    assert "não tem orçamento" in texto and "Etapas do orçamento" not in texto
+    assert "x-e1 | Muro de arrimo" in texto and "eletrica | t1 | Quadro geral" in texto
+    # árvore de uma API anterior (sem `origem`) continua lendo como lista padrão
+    antiga = [{k: v for k, v in e.items() if k != "origem"} for e in ARVORE_PADRAO]
+    assert contexto_da_obra(None, antiga) == texto
 
 
 async def test_recusa_vira_erro_gravado_e_o_consumo_conta():

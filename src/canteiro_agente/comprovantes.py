@@ -58,7 +58,8 @@ def _linhas_fixas() -> str:
     return "\n".join(f"{e.chave} | {e.nome} | {e.inclui}" for e in ETAPAS_FIXAS)
 
 
-# Igual para todo cliente e toda obra (as etapas fixas moram no código do domínio): é o bloco que fica em cache.
+# Igual para todo cliente e toda obra (a lista padrão mora no código do domínio): é o bloco que fica em cache. As etapas
+# do orçamento de cada obra mudam por obra e por isso vão no bloco seguinte, nunca aqui.
 INSTRUCAO_LEITURA = f"""Você lê comprovantes de gastos de obras de construção civil no Brasil para a equipe da obra \
 lançar no controle de custos. O comprovante vem como foto ou PDF e pode ser qualquer coisa: nota fiscal, comprovante \
 de Pix ou transferência, boleto pago, recibo, guia de imposto, ou um papel anotado à mão com quanto foi e para quem.
@@ -94,25 +95,42 @@ isso no motivo. Sem ano escrito, nenhuma opção.
 pedreiro", "guia do FGTS").
 - classificacao: até 3 etapas da obra onde o gasto entra, a mais provável primeiro, cada uma com o motivo em uma \
 frase. Use exatamente a chave da etapa e, se um tópico daquela etapa servir, o id exato do tópico (senão null). Mão de \
-obra de um serviço entra na etapa do serviço (o pedreiro da alvenaria vai em alvenaria). Guias, encargos e benefícios \
-de funcionário vão em pessoal. O que não couber em nenhuma vai em outros. Pix sem anotação para uma pessoa física \
-quase sempre é dúvida: "baixa", com as etapas mais prováveis.
+obra de um serviço entra na etapa do serviço (o pedreiro da alvenaria vai na etapa de alvenaria). Pix sem anotação \
+para uma pessoa física quase sempre é dúvida: "baixa", com as etapas mais prováveis.
+
+Quais etapas valem depende da obra, e o bloco seguinte diz qual é o caso:
+- Obra com orçamento: só as etapas do orçamento dela e as etapas extras, as duas listadas no bloco seguinte. A chave \
+da etapa do orçamento é o código dela na planilha (como "18"). Nunca use a lista padrão abaixo numa obra com \
+orçamento. Se nenhuma etapa do orçamento servir (taxa, despesa que a planilha não prevê), prefira uma etapa extra que \
+sirva; sem nenhuma, use "baixa" com as mais próximas.
+- Obra sem orçamento: a lista padrão abaixo e as etapas extras da obra. Guias, encargos e benefícios de funcionário \
+vão em pessoal; o que não couber em nenhuma vai em outros.
 - observacoes: o que atrapalhou a leitura ou o que a pessoa precisa saber, em uma ou duas frases; null se nada.
 
-Etapas fixas, iguais em toda obra (chave | nome | o que entra):
+Lista padrão, só para obra sem orçamento (chave | nome | o que entra):
 {_linhas_fixas()}
 
-A obra pode ter etapas extras e tópicos dentro das etapas: eles vêm no bloco seguinte."""
+Os tópicos dentro das etapas também vêm no bloco seguinte."""
 
 
 def contexto_da_obra(obra: dict[str, Any] | None, arvore: list[dict[str, Any]]) -> str:
-    """O bloco da obra: muda só quando a árvore dela muda, então também fica em cache entre leituras da mesma obra."""
+    """O bloco da obra: muda só quando a árvore dela muda, então também fica em cache entre leituras da mesma obra.
+
+    A árvore vem pronta da API (`GET /obras/{id}/arvore`): com orçamento, as etapas dele (`origem: "orcamento"`) e as
+    extras; sem, a lista padrão e as extras. Aqui só se escreve o que veio, e a revisão (domínio) descarta qualquer
+    chave que não esteja nela."""
     partes = []
     if obra:
         onde = "/".join(x for x in (obra.get("cidade"), obra.get("uf")) if x)
         tipo = obra.get("tipologia") or ""
         detalhes = ", ".join(x for x in (tipo, onde) if x)
         partes.append(f"Obra: {obra.get('nome', '')}" + (f" ({detalhes})" if detalhes else "") + ".")
+    do_orcamento = [e for e in arvore if e.get("origem") == "orcamento"]
+    if do_orcamento:
+        partes.append("Esta obra tem orçamento. Etapas do orçamento (chave | nome):")
+        partes += [f"{e['chave']} | {e['nome']}" for e in do_orcamento]
+    else:
+        partes.append("Esta obra não tem orçamento: use a lista padrão.")
     extras = [e for e in arvore if not e.get("fixa")]
     partes.append("Etapas extras desta obra (chave | nome):")
     partes += [f"{e['chave']} | {e['nome']}" for e in extras] or ["nenhuma"]

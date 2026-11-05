@@ -43,7 +43,9 @@ o que pode propor, quanto custa e como sabemos se ficou bom. Código vem depois 
   um fluxo fixo, sem ferramentas. Confere créditos (sem saldo não chama o modelo), busca na API o comprovante, o
   arquivo, a árvore de gastos da obra e a obra, e faz **uma** chamada ao Claude (`beta.messages.create`, saída
   estruturada com o esquema `LeituraComprovante` do domínio, `fallbacks="default"`, esforço `medium`, 120 s e uma
-  repetição). Cache em dois blocos: instrução + etapas fixas (iguais para todo cliente) e a obra. O consumo é gravado
+  repetição). Cache em dois blocos: instrução + lista padrão de etapas (iguais para todo cliente) e a obra (com
+  orçamento, as etapas dele e as extras, que são as únicas aceitas; sem, as extras e o aviso de usar a lista padrão,
+  tudo como `GET …/arvore` devolve). O consumo é gravado
   **antes** de validar a resposta (JSON cortado ou fora do esquema também foi pago). A leitura, ou o erro em frase
   para a pessoa, vai para `PUT /interno/comprovantes/{id}/leitura` (token de serviço + token do usuário). É sugestão:
   o gasto só nasce quando uma pessoa confirma na revisão, na API. Um comprovante por vez (trava no processo); foto

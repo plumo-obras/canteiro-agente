@@ -33,8 +33,12 @@ async def test_orcamento_traz_aditivo_e_andamento_prontos(ferramentas):
     assert o["lista_aditivos"] == [{"numero": 1, "descricao": "Aterro, tapume e aço", "data": "20/11/2026",
                                     "valor": "R$ 59.831,80", "itens": 5}]
     fund = next(e for e in o["etapas"] if e["etapa"] == "3")
-    assert (fund["comprometido"], fund["realizado_compras"], fund["saldo"], fund["estourou"]) == (
+    assert (fund["comprometido"], fund["realizado"], fund["saldo"], fund["estourou"]) == (
         "R$ 24.250,00", "R$ 23.340,00", "R$ 91.996,82", False)
+    # gasto por comprovante vem da API já somado; aqui só aparece a parte dele (e nada na etapa sem gasto)
+    assert fund["gastos_por_comprovante"] == "R$ 1.500,00"
+    assert "gastos_por_comprovante" not in next(e for e in o["etapas"] if e["etapa"] == "1")
+    assert o["gastos_por_comprovante"] == {"total": "R$ 1.800,00", "fora_do_orcamento_etapas_extras": "R$ 300,00"}
     assert [(x["numero"], x["versao"]) for x in o["itens_encontrados"]] == [("1.2", "contrato"), ("A1.2", "aditivo")]
 
 

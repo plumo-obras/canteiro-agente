@@ -317,8 +317,12 @@ ORCAMENTO_EMEI = {
     "totais": {"contratado": 203500158, "aditivos": 5983180, "atual": 209483338, "n_itens": 496, "n_etapas": 24,
                "cotando": 0, "comprometido": 2425000, "realizado": 2334000, "saldo": 209483338 - 2425000,
                "aditivos_pct": 294,
-               "sem_etapa": {"cotando": 0, "comprometido": 0, "realizado": 0}},
+               "sem_etapa": {"cotando": 0, "comprometido": 0, "realizado": 0},
+               # gastos por comprovante (sem pedido): a API já somou no comprometido e no realizado
+               "gastos": {"total": 180000, "nas_etapas": 150000, "fora_do_orcamento": 30000, "na_lista_padrao": 0,
+                          "sem_etapa_do_orcamento": 0}},
 }
+ORCAMENTO_EMEI["etapas"][1]["gastos_avulsos"] = 150000
 CRONOGRAMA_EMEI = {
     "inicio": "2026-11", "meses": 11, "base": {"inicio": "2026-11", "meses": 10}, "revisoes": 1,
     # como a API devolve (regras.situacao_etapa): 1 atrasada, 2 adiantada, 4 começa em dezembro

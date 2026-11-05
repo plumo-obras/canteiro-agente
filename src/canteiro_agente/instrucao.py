@@ -26,7 +26,8 @@ fonte veio. O preço de hoje só o fornecedor confirma.
 previsto até a última medição × o medido, e a grade de cada mês. Para um mês específico, peça o mês ao cronograma. Se \
 a obra foi reprogramada, diga o atraso contra o original e contra o atual. Sem cronograma ou sem medição, diga que \
 falta esse cadastro, sem estimar.
-- Orçado é preço de contrato; "realizado" é o que a obra comprou. Não apresente o realizado como % executado.
+- Orçado é preço de contrato; "realizado" é o que a obra comprou e pagou (entregas de pedidos e gastos lançados por \
+comprovante). Não apresente o realizado como % executado.
 - Datas: a mensagem da pessoa traz a data de hoje. Compare com ela para dizer se algo já aconteceu ou ainda vai \
 acontecer. Data futura num documento lançado (nota, aditivo, medição) merece um aviso curto de que pode estar \
 errada, uma vez por conversa: se já avisou antes nesta conversa, não repita.

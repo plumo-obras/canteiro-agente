@@ -442,7 +442,7 @@ def _resumo(r: dict[str, Any], eventos: Eventos) -> dict[str, Any]:
         financeiro: dict[str, Any] = {
             "orcado_atual": fmt_reais(f["orcado_atual"]), "aditivos": fmt_reais(f["aditivos"]),
             "aditivos_pct": _pct(f.get("aditivos_pct")), "comprometido": fmt_reais(f["comprometido"]),
-            "realizado_compras": fmt_reais(f["realizado"]), "saldo_a_comprometer": fmt_reais(f["saldo"]),
+            "realizado": fmt_reais(f["realizado"]), "saldo_a_comprometer": fmt_reais(f["saldo"]),
             "etapas_estouradas": [f"{x['etapa']} {x['descricao']} (saldo {fmt_reais(x['saldo'])})"
                                   for x in f["etapas_estouradas"]],
         }
@@ -452,6 +452,8 @@ def _resumo(r: dict[str, Any], eventos: Eventos) -> dict[str, Any]:
             financeiro["comprometido"] = fmt_reais(f["comprometido"])
         falta_cadastro[f"sem_orcamento:{o['id']}"] = ("Orçamento não importado: importe em Orçamento para acompanhar "
                                                      "custo por etapa.")
+    if gastos := _gastos_por_comprovante(f.get("gastos")):
+        financeiro["gastos_por_comprovante"] = gastos
     almox: dict[str, Any] = {
         "falta_comprar": [f"{x['nome']}: {x['texto']}" for x in a["falta_comprar"]],
         "consumo_por_semana": "o sistema ainda não projeta consumo por semana; a falta é até o fim da obra",
@@ -514,6 +516,16 @@ def _ler_reais(texto: str) -> int:
         return reais(texto.replace("R$", "").strip())
     except (ValueError, ArithmeticError) as e:
         raise ToolError(f"valor inválido: {e}") from None
+
+
+def _gastos_por_comprovante(g: dict[str, Any] | None) -> dict[str, str] | None:
+    """Os gastos lançados por comprovante (sem pedido), como a API repartiu: já estão no comprometido e no realizado.
+    Só o que não for zero, para o modelo não comentar linha vazia."""
+    if not g or not g.get("total"):
+        return None
+    rotulos = {"total": "total", "fora_do_orcamento": "fora_do_orcamento_etapas_extras",
+               "sem_etapa_do_orcamento": "sem_etapa_do_orcamento_falta_reclassificar"}
+    return {nome: fmt_reais(g[k]) for k, nome in rotulos.items() if g.get(k)}
 
 
 def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
@@ -1008,10 +1020,12 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         """Mostra o orçamento da obra e o previsto × realizado por etapa, com as contas já feitas pelo sistema.
 
         Traz: valor do contrato, aditivos (total, % sobre o contrato, cada aditivo com nº, descrição e data), orçado
-        atual, e por etapa: orçado, em cotação, comprometido (pedidos), realizado (compras e serviços recebidos) e saldo
-        a comprometer. Use para "quanto custou o aditivo", "a fundação estourou?", "quanto já gastamos", e para achar a
-        chave da etapa antes de propor um pedido. Orçado é preço de contrato (com BDI e mão de obra); realizado é custo
-        de compra, então realizado não é o % executado (para isso, consultar_cronograma).
+        atual, e por etapa: orçado, em cotação, comprometido, realizado e saldo a comprometer. Comprometido e realizado
+        juntam pedidos (realizado = o que foi entregue ou medido) e gastos lançados por comprovante na etapa
+        (`gastos_por_comprovante`, já somados; o pagamento de um pedido não soma de novo). Gastos em etapa extra ou
+        ainda sem etapa do orçamento só entram nos totais. Use para "quanto custou o aditivo", "a fundação estourou?",
+        "quanto já gastamos", e para achar a chave da etapa antes de propor um pedido. Orçado é preço de contrato (com
+        BDI e mão de obra); realizado é custo, então realizado não é o % executado (para isso, consultar_cronograma).
 
         Args:
             obra_id: ID da obra.
@@ -1036,21 +1050,24 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             "orcado_atual": fmt_reais(t["atual"]),
             "em_cotacao": fmt_reais(t["cotando"]),
             "comprometido": fmt_reais(t["comprometido"]),
-            "realizado_compras": fmt_reais(t["realizado"]),
+            "realizado": fmt_reais(t["realizado"]),
             "saldo_a_comprometer": _reais_ou_none(t.get("saldo")),
             "lista_aditivos": [{"numero": v["numero"], "descricao": v.get("descricao"), "data": fmt_data(v.get("data")),
                                 "valor": fmt_reais(v["total"]), "itens": v["itens"]} for v in aditivos],
             "etapas": [{
                 "etapa": e["etapa"], "descricao": e["descricao"], "orcado_atual": fmt_reais(e["atual"]),
                 "aditivos": fmt_reais(e["aditivos"]), "em_cotacao": fmt_reais(e["cotando"]),
-                "comprometido": fmt_reais(e["comprometido"]), "realizado_compras": fmt_reais(e["realizado"]),
+                "comprometido": fmt_reais(e["comprometido"]), "realizado": fmt_reais(e["realizado"]),
                 "saldo": _reais_ou_none(e.get("saldo")),
                 "estourou": e.get("estourou"),
+                **({"gastos_por_comprovante": fmt_reais(e["gastos_avulsos"])} if e.get("gastos_avulsos") else {}),
             } for e in o["etapas"]],
         }
+        if gastos := _gastos_por_comprovante(t.get("gastos")):
+            saida["gastos_por_comprovante"] = gastos
         if t["sem_etapa"]["comprometido"] or t["sem_etapa"]["cotando"]:
             saida["sem_etapa"] = {"comprometido": fmt_reais(t["sem_etapa"]["comprometido"]),
-                                  "realizado_compras": fmt_reais(t["sem_etapa"]["realizado"])}
+                                  "realizado": fmt_reais(t["sem_etapa"]["realizado"])}
         achados: list[dict[str, Any]] = []
         if busca:
             alvo = _sem_acento(busca)
