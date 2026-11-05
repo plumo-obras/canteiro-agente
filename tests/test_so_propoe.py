@@ -13,9 +13,9 @@ import pytest
 
 from canteiro_agente import ferramentas as mod_ferramentas
 from canteiro_agente.api_central import ApiCentral
-from canteiro_agente.ferramentas import NIVEIS, Eventos, criar_ferramentas
+from canteiro_agente.ferramentas import LOCAIS, NIVEIS, Eventos, criar_ferramentas
 
-from falsos import ACO, BLOCO, CIMENTO, OBRA, OBRA_EMEI, PED_ACO, TOKEN_USUARIO, ApiFalsa
+from falsos import ACO, BLOCO, CIMENTO, OBRA, OBRA_EMEI, PED_ACO, PED_BRITA, TOKEN_USUARIO, ApiFalsa
 
 ESCRITA_PERMITIDA = {("POST", "/propostas")}
 
@@ -23,16 +23,20 @@ ESCRITA_PERMITIDA = {("POST", "/propostas")}
 # alcança de fato é o que se registra. Ferramenta nova sem entrada aqui faz o teste falhar de propósito.
 ENTRADAS: dict[str, dict] = {
     "listar_obras": {},
+    "resumo_obra": {"obra_id": OBRA_EMEI},
     "consultar_estoque": {"obra_id": OBRA, "busca": "aço"},
     "historico_movimentos": {"obra_id": OBRA, "insumo_id": BLOCO},
     "listar_pedidos": {"obra_id": OBRA},
     "consultar_orcamento": {"obra_id": OBRA_EMEI},
     "consultar_cronograma": {"obra_id": OBRA_EMEI},
     "listar_fornecedores": {},
+    "calcular": {"expressao": "7 [m³] × 130 [R$/m³]", "unidade_resultado": "R$"},
     "propor_pedido": {"obra_id": OBRA, "insumo_id": CIMENTO, "quantidade": "34", "fornecedor": "Votorantim",
                       "valor": "1292", "justificativa": "repor a falta"},
     "propor_avanco_pedido": {"obra_id": OBRA, "pedido_id": PED_ACO, "para": "recebido",
                              "justificativa": "o caminhão chegou"},
+    "propor_entrega": {"obra_id": OBRA_EMEI, "pedido_id": PED_BRITA, "linhas": [{"indice": 0, "quantidade": "7"}],
+                       "justificativa": "chegou o resto", "nf_numero": "4410", "nf_valor": "910,00"},
     "propor_ajuste_estoque": {"obra_id": OBRA, "insumo_id": ACO, "quantidade": "-190", "motivo": "quebra"},
 }
 
@@ -109,7 +113,11 @@ async def test_cada_ferramenta_so_escreve_por_proposta(nome):
         eventos = Eventos()
         fs = {f.name: f for f in criar_ferramentas(ApiCentral(http, "http://api.teste", TOKEN_USUARIO), eventos)}
         assert set(fs) == set(NIVEIS) == set(ENTRADAS), "ferramenta nova: classifique em NIVEIS e dê entrada aqui"
-        await fs[nome].call(ENTRADAS[nome])
+        resultado = await fs[nome].call(ENTRADAS[nome])
+    if nome in LOCAIS:
+        # a calculadora não fala com a API: nenhuma requisição, nem de leitura
+        assert api_falsa.chamadas == [] and NIVEIS[nome] == "consulta", resultado
+        return
     assert api_falsa.chamadas, f"{nome} não chamou a API: a entrada do teste não chegou até ela"
     escritas = [(c.metodo, c.caminho) for c in api_falsa.chamadas if c.metodo != "GET"]
     if NIVEIS[nome] == "consulta":

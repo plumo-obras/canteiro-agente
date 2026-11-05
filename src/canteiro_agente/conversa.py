@@ -136,9 +136,19 @@ def _dono(autorizacao: str, creditos: dict[str, Any], claims: dict[str, Any]) ->
     return "token:" + hashlib.sha256(autorizacao.encode()).hexdigest()
 
 
+_DIAS = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+
+
+def contexto_de_hoje(agora: datetime | None = None) -> str:
+    """A data de hoje em Brasília, para o modelo separar passado de futuro (no teste ele repetia nota e aditivo
+    datados no futuro sem estranhar). Vai na mensagem, nunca na instrução: mudaria o prefixo em cache todo dia."""
+    hoje = (agora or datetime.now(FUSO)).astimezone(FUSO)
+    return f"(Hoje é {_DIAS[hoje.weekday()]}, {hoje:%d/%m/%Y}, {hoje:%H:%M} no horário de Brasília.)"
+
+
 def _conteudo_usuario(pedido: PedidoConversa) -> list[dict[str, Any]]:
-    # A obra em foco vai na mensagem, não na instrução: a instrução tem de ser idêntica em toda conversa (cache).
-    blocos = []
+    # A obra em foco e a data vão na mensagem, não na instrução: a instrução tem de ser idêntica em toda conversa.
+    blocos = [{"type": "text", "text": contexto_de_hoje()}]
     if pedido.obra_id:
         blocos.append({"type": "text", "text": f"(Obra em foco na tela: obra_id={pedido.obra_id})"})
     blocos.append({"type": "text", "text": pedido.texto})

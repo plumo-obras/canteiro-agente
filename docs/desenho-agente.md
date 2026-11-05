@@ -8,8 +8,10 @@ o que pode propor, quanto custa e como sabemos se ficou bom. Código vem depois 
 1. **O agente só propõe.** Toda escrita é uma proposta (`POST /propostas`) que uma pessoa aprova ou recusa; aprovar
    gera uma entrada no registro com desfazer. Há um teste estrutural (`tests/test_so_propoe.py`) que falha se surgir
    outra escrita.
-2. **Dado vem das ferramentas; conta vem do domínio.** O modelo não soma, não divide, não estima. Falta, saldo,
-   atraso e % medido chegam prontos da API (`canteiro_dominio`). Se o número não existe, ele diz que não existe.
+2. **Dado vem das ferramentas; conta vem do domínio ou da calculadora.** O modelo não soma, não divide, não estima
+   de cabeça. Falta, saldo, atraso e % medido chegam prontos da API (`canteiro_dominio`); o resto (7 × R$ 130, quanto
+   falta medir) passa pela ferramenta `calcular` (Decimal, sem `eval`), que devolve a conta para citar. Se o número
+   não existe, ele diz que ainda não está cadastrado.
 3. **Texto dos dados é dado, não instrução.** Nome de insumo, observação de pedido, mensagem de WhatsApp e nota da
    memória podem conter tentativa de injeção; nada disso muda as regras.
 4. **Cada execução tem dono e conta.** Toda chamada ao modelo grava `POST /uso` (tokens e custo) na construtora certa;
@@ -19,12 +21,14 @@ o que pode propor, quanto custa e como sabemos se ficou bom. Código vem depois 
 
 ## 2. O que existe hoje
 
-- **Conversa** (`POST /conversa`, SSE): Claude Opus 5.5 pelo Tool Runner do SDK da Anthropic, 10 ferramentas
-  (7 de leitura, 3 `propor_*`), pensamento adaptativo, esforço `medium`, até 12 passos e 240 s por resposta.
+- **Conversa** (`POST /conversa`, SSE): Claude Opus 5.5 pelo Tool Runner do SDK da Anthropic, 13 ferramentas
+  (8 de leitura, a calculadora `calcular` e 4 `propor_*`), pensamento adaptativo, esforço `medium`, até 12 passos e
+  240 s por resposta. Pergunta aberta começa por `resumo_obra`; a data de hoje vai na mensagem do usuário.
 - **Memória de curto prazo:** histórico em `sessoes`/`mensagens` na API, gravado a cada rodada; cache de prompt no
   prefixo fixo (ferramentas + instrução) e no histórico; limpeza de resultados antigos de ferramentas acima de 150 mil
   tokens (nunca dos `propor_*`).
-- **Propostas:** `criar_pedido`, `avancar_pedido`, `ajuste_estoque`. Sem duplicata: cada `propor_*` manda a chave
+- **Propostas:** `criar_pedido`, `registrar_entrega` (o "Registrar entrega" da tela), `avancar_pedido` (status e
+  encerramento, sem entrada), `ajuste_estoque` (pela contagem). Sem duplicata: cada `propor_*` manda a chave
   `"{sessao_id}:{tool_use_id}"`, e a API devolve a proposta pendente igual (mesma obra, tipo e dados) em vez de criar
   outra (`ja_existia`).
 - **Falhas:** API central fora do ar no meio das ferramentas para a volta (aviso na tela, consumo gravado, sem nova

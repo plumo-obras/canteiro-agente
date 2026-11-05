@@ -59,19 +59,31 @@ class ApiFalsa:
     fora_do_ar_depois: int | None = None
 
     def _insumos(self) -> list[dict[str, Any]]:
-        def conta(precisa, saldo, a_caminho, cotando, falta):
+        # `texto` é o que a API monta com regras.texto_da_conta (aqui escrito à mão: o dublê não faz conta)
+        def conta(precisa, saldo, a_caminho, cotando, falta, texto):
             return {"precisa": precisa, "saldo": saldo, "a_caminho": a_caminho, "cotando": cotando,
-                    "transferencia": 0, "falta": falta, "comprar": falta}
+                    "transferencia": 0, "falta": falta, "comprar": falta, "sobra": 0, "sem_previsao": False,
+                    "texto": texto}
         return [
             {"insumo": {"id": ACO, "tenant_id": "t1", "obra_id": OBRA, "nome": "Aço CA-50", "unidade": "kg",
                         "curva": "A", "precisa_ate_o_fim": 3_940_000},
-             "conta": conta(3_940_000, 140_000, 3_200_000, 600_000, 0)},
+             "conta": conta(3_940_000, 140_000, 3_200_000, 600_000, 0,
+                            "precisa 3.940 kg − saldo 140 kg − a caminho 3.200 kg − em cotação 600 kg − "
+                            "transferência 0 kg = falta 0 kg"),
+             "ultimo_preco": None},
             {"insumo": {"id": CIMENTO, "tenant_id": "t1", "obra_id": OBRA, "nome": "Cimento CP-II", "unidade": "sc",
                         "curva": "A", "precisa_ate_o_fim": 200_000},
-             "conta": conta(200_000, 46_000, 120_000, 0, 34_000)},
+             "conta": conta(200_000, 46_000, 120_000, 0, 34_000,
+                            "precisa 200 sc − saldo 46 sc − a caminho 120 sc − em cotação 0 sc − transferência 0 sc"
+                            " = falta 34 sc"),
+             "ultimo_preco": {"valor_unitario": 3800, "pedido_id": PED_CIMENTO, "numero": "PED-0160",
+                              "fornecedor": "Depósito São Jorge", "data": "2026-10-20", "status": "recebido"}},
             {"insumo": {"id": BLOCO, "tenant_id": "t1", "obra_id": OBRA, "nome": "Bloco cerâmico 14x19x29",
                         "unidade": "un", "curva": "A", "precisa_ate_o_fim": 4_800_000},
-             "conta": conta(4_800_000, 2_760_000, 0, 0, 2_040_000)},
+             "conta": conta(4_800_000, 2_760_000, 0, 0, 2_040_000,
+                            "precisa 4.800 un − saldo 2.760 un − a caminho 0 un − em cotação 0 un − transferência "
+                            "0 un = falta 2.040 un"),
+             "ultimo_preco": None},
         ]
 
     def _movimentos(self) -> list[dict[str, Any]]:
@@ -127,8 +139,8 @@ class ApiFalsa:
         if caminho == f"/obras/{OBRA}/insumos/{BLOCO}/movimentos":
             return httpx.Response(200, json=self._movimentos()[: int(req.url.params.get("limite", 50))])
         if caminho == f"/obras/{OBRA}/pedidos":
-            status = req.url.params.get("status")
-            return httpx.Response(200, json=[p for p in self._pedidos() if not status or p["status"] == status])
+            status = req.url.params.get_list("status")
+            return httpx.Response(200, json=[p for p in self._pedidos() if not status or p["status"] in status])
         if caminho == f"/obras/{OBRA_EMEI}/orcamento":
             return httpx.Response(200, json=ORCAMENTO_EMEI)
         if caminho == f"/obras/{OBRA_EMEI}/cronograma":
@@ -137,7 +149,14 @@ class ApiFalsa:
             return httpx.Response(200, json=[{"etapa": "1", "descricao": "SERVIÇOS PRELIMINARES"},
                                              {"etapa": "3", "descricao": "FUNDAÇÕES"}])
         if caminho == f"/obras/{OBRA_EMEI}/insumos":
-            return httpx.Response(200, json=self._insumos())
+            return httpx.Response(200, json=INSUMOS_EMEI)
+        if caminho == f"/obras/{OBRA_EMEI}/pedidos":
+            status = req.url.params.get_list("status")
+            return httpx.Response(200, json=[p for p in PEDIDOS_EMEI if not status or p["status"] in status])
+        if caminho == f"/obras/{OBRA_EMEI}/resumo":
+            return httpx.Response(200, json=RESUMO_EMEI)
+        if caminho == f"/obras/{OBRA}/resumo":
+            return httpx.Response(200, json=RESUMO_VILA)
         if caminho == "/fornecedores":
             return httpx.Response(200, json=[{"id": "f1", "nome": "Depósito São Jorge", "cnpj": "11222333000181",
                                               "contato": "Jorge", "telefone": "51 9999", "email": ""}])
@@ -295,12 +314,131 @@ ORCAMENTO_EMEI = {
 }
 CRONOGRAMA_EMEI = {
     "inicio": "2026-11", "meses": 11, "base": {"inicio": "2026-11", "meses": 10}, "revisoes": 1,
-    "etapas": [], "medicoes": [{"numero": 1, "mes": "2026-11", "valor": 7876733, "pct_obra_acumulado": 376,
-                                "observacao": ""}],
+    # como a API devolve (regras.situacao_etapa): 1 atrasada, 2 adiantada, 4 começa em dezembro
+    "etapas": [
+        {"etapa": "1", "descricao": "SERVIÇOS PRELIMINARES", "atual": 8152981, "percentuais": [10000, 0],
+         "medido_acumulado": 8886, "valores_mes": [8152981, 0], "medido_mes": [8886, 0],
+         "previsto_ate_referencia": 10000, "situacao": "atrasada", "atraso_pct": 1114},
+        {"etapa": "2", "descricao": "MOVIMENTO DE TERRA", "atual": 6665027, "percentuais": [1500, 8500],
+         "medido_acumulado": 2483, "valores_mes": [999754, 5665273], "medido_mes": [2483, 0],
+         "previsto_ate_referencia": 1500, "situacao": "adiantada", "atraso_pct": 0},
+        {"etapa": "4", "descricao": "SUPERESTRUTURA", "atual": 11295680, "percentuais": [0, 10000],
+         "medido_acumulado": 0, "valores_mes": [0, 11295680], "medido_mes": [0, 0],
+         "previsto_ate_referencia": 0, "situacao": "nao_comecou", "atraso_pct": 0},
+        {"etapa": "9", "descricao": "REVESTIMENTOS", "atual": 29974323, "percentuais": [0, 0],
+         "medido_acumulado": 0, "valores_mes": [0, 0], "medido_mes": [0, 0],
+         "previsto_ate_referencia": 0, "situacao": "nao_comecou", "atraso_pct": 0},
+    ],
+    "medicoes": [{"numero": 1, "mes": "2026-11", "valor": 7876733, "pct_obra_acumulado": 376, "observacao": ""}],
     "mensal": [{"mes": "2026-11", "previsto": 8505000, "previsto_acumulado": 8505000, "pct_previsto_acumulado": 406,
                 "medido": 7876733, "medido_acumulado": 7876733, "pct_medido_acumulado": 376,
-                "pct_base_acumulado": 406}],
+                "pct_base_acumulado": 406},
+               {"mes": "2026-12", "previsto": 16270792, "previsto_acumulado": 24775792,
+                "pct_previsto_acumulado": 1183, "medido": None, "medido_acumulado": None,
+                "pct_medido_acumulado": None, "pct_base_acumulado": 1183}],
     "prazo": {"termino_contratual": "2027-09", "termino_projetado": "2027-09", "atraso_meses": 0, "atraso_decimos": 0,
               "pct_previsto_na_medicao": 406, "pct_medido": 376, "mes_referencia": "2026-11",
               "termino_base": "2027-08", "atraso_base_meses": 1, "atraso_base_decimos": 5},
+}
+
+# --- EMEI: o almoxarifado e os pedidos do teste com o modelo real (05/11/2026) ---
+CIMENTO_EMEI, AREIA_EMEI, BRITA_EMEI = "insumo-cimento-emei", "insumo-areia-emei", "insumo-brita-emei"
+PED_BRITA = "pedido-0170"
+
+
+def _sem_previsao(saldo: int, a_caminho: int, un: str, texto_saldo: str, texto_caminho: str) -> dict:
+    return {"precisa": 0, "saldo": saldo, "a_caminho": a_caminho, "cotando": 0, "transferencia": 0, "falta": 0,
+            "comprar": 0, "sobra": 0, "sem_previsao": True,
+            "texto": f"sem previsão lançada para a obra (o sistema não sabe quanto ela precisa, então não calcula a "
+                     f"falta) · saldo {texto_saldo} {un} · a caminho {texto_caminho} {un} · em cotação 0 {un} · "
+                     f"transferência 0 {un}"}
+
+
+INSUMOS_EMEI = [
+    {"insumo": {"id": CIMENTO_EMEI, "obra_id": OBRA_EMEI, "nome": "Cimento CP-II 50 kg", "unidade": "sc",
+                "curva": "A", "precisa_ate_o_fim": 0, "valor_unitario": 0},
+     "conta": _sem_previsao(60_000, 0, "sc", "60", "0"),
+     "ultimo_preco": {"valor_unitario": 3750, "pedido_id": "pedido-0169", "numero": "PED-0169",
+                      "fornecedor": "Materiais de Construção Vale do Taquari Ltda", "data": "2026-11-03",
+                      "status": "conferido"}},
+    {"insumo": {"id": AREIA_EMEI, "obra_id": OBRA_EMEI, "nome": "Areia média", "unidade": "m³", "curva": "B",
+                "precisa_ate_o_fim": 0},
+     "conta": _sem_previsao(10_000, 0, "m³", "10", "0"), "ultimo_preco": None},
+    {"insumo": {"id": BRITA_EMEI, "obra_id": OBRA_EMEI, "nome": "Brita 1", "unidade": "m³", "curva": "B",
+                "precisa_ate_o_fim": 0},
+     "conta": _sem_previsao(18_000, 7_000, "m³", "18", "7"),
+     "ultimo_preco": {"valor_unitario": 13000, "pedido_id": PED_BRITA, "numero": "PED-0170",
+                      "fornecedor": "Pedreira Lajeado Britagem Ltda", "data": "2026-11-02", "status": "parcial"}},
+]
+
+PEDIDOS_EMEI = [
+    {"id": PED_BRITA, "numero": "PED-0170", "obra_id": OBRA_EMEI, "fornecedor": "Pedreira Lajeado Britagem Ltda",
+     "valor": 325_000, "status": "parcial", "previsao": "2026-11-16", "recebimentos": 1,
+     "criado_em": "2026-11-02T13:00:00Z",
+     "linhas": [{"insumo_id": BRITA_EMEI, "nome": "Brita 1", "unidade": "m³", "tipo": "material", "etapa": "3",
+                 "quantidade": 25_000, "valor_unitario": 13000, "total": 325_000, "recebida": 18_000,
+                 "falta_entregar": 7_000}]},
+    {"id": "pedido-0169", "numero": "PED-0169", "obra_id": OBRA_EMEI,
+     "fornecedor": "Materiais de Construção Vale do Taquari Ltda", "valor": 450_000, "status": "conferido",
+     "previsao": "2026-11-03", "recebimentos": 1, "criado_em": "2026-11-01T13:00:00Z",
+     "linhas": [{"insumo_id": CIMENTO_EMEI, "nome": "Cimento CP-II 50 kg", "unidade": "sc", "tipo": "material",
+                 "etapa": "3", "quantidade": 120_000, "valor_unitario": 3750, "total": 450_000,
+                 "recebida": 120_000, "falta_entregar": 0}]},
+]
+
+
+def _obra(id_, nome, cidade, status="em_andamento"):
+    return {"id": id_, "tenant_id": "t1", "nome": nome, "cidade": cidade, "status": status, "verba": 0}
+
+
+# GET /obras/{id}/resumo como a API calcula (servicos/resumo.py)
+RESUMO_EMEI = {
+    "obra": _obra(OBRA_EMEI, "EMEI Santa Clara do Sul", "Santa Clara do Sul"),
+    "hoje": "2026-11-05",
+    "cronograma": {
+        "cadastrado": True, "mes_corrente": "2026-11", "termino_contratual": "2027-08",
+        "termino_projetado": "2027-08", "termino_original": "2027-08", "atraso_decimos": 0,
+        "atraso_base_decimos": 0, "revisoes": 0, "mes_ultima_medicao": "2026-11", "medicoes": 1,
+        "pct_previsto_na_medicao": 391, "pct_medido": 396, "previsto_no_mes": 8195509,
+        "pct_previsto_acumulado_no_mes": 391,
+        "etapas_do_mes": [
+            {"etapa": "1", "descricao": "SERVIÇOS PRELIMINARES", "pct_no_mes": 10000, "valor_no_mes": 8152981,
+             "previsto_ate_referencia": 10000, "medido_acumulado": 8886, "situacao": "atrasada"},
+            {"etapa": "2", "descricao": "MOVIMENTO DE TERRA", "pct_no_mes": 1500, "valor_no_mes": 999754,
+             "previsto_ate_referencia": 1500, "medido_acumulado": 2483, "situacao": "adiantada"}],
+        "proximo_mes_com_inicio": "2026-12",
+        "proximas_etapas": [{"etapa": "4", "descricao": "SUPERESTRUTURA", "pct_no_mes": 10000,
+                             "valor_no_mes": 11295680, "previsto_ate_referencia": 0, "medido_acumulado": 0,
+                             "situacao": "nao_comecou"}],
+        "etapas_atrasadas": [{"etapa": "1", "descricao": "SERVIÇOS PRELIMINARES", "medido_acumulado": 8886,
+                              "previsto_ate_referencia": 10000, "atraso_pct": 1114}],
+    },
+    "financeiro": {"tem_orcamento": True, "contratado": 203500158, "aditivos": 5983180, "aditivos_pct": 294,
+                   "orcado_atual": 209483338, "cotando": 0, "comprometido": 2425000, "realizado": 2334000,
+                   "saldo": 207058338, "etapas_estouradas": []},
+    "entregas": {"hoje": [], "atrasadas": [], "proximos_7_dias": [], "sem_previsao": 0, "nf_para_conferir": 0},
+    "almoxarifado": {"insumos": 3, "falta_comprar": [], "sem_previsao": 3, "consumo_projetado": False},
+    "pendencias": {"propostas": 1, "titulos": ["PED-0170: encerrar sem esperar o resto"]},
+}
+
+RESUMO_VILA = {
+    "obra": _obra(OBRA, "Casa Vila Nova", "Campinas"),
+    "hoje": "2026-11-05",
+    "cronograma": {"cadastrado": False, "mes_corrente": "2026-11", "termino_contratual": None,
+                   "etapas_do_mes": [], "proximas_etapas": [], "etapas_atrasadas": []},
+    "financeiro": {"tem_orcamento": False, "contratado": 0, "aditivos": 0, "aditivos_pct": None,
+                   "orcado_atual": 0, "cotando": 0, "comprometido": 0, "realizado": 0, "saldo": 0,
+                   "etapas_estouradas": []},
+    "entregas": {"hoje": [], "atrasadas": [
+        {"pedido_id": PED_ACO, "numero": "PED-0158", "fornecedor": "Gerdau", "status": "em_transito",
+         "previsao": "2026-11-03", "itens": [{"nome": "Aço CA-50", "unidade": "kg", "falta_entregar": 3_200_000}]}],
+        "proximos_7_dias": [], "sem_previsao": 0, "nf_para_conferir": 1},
+    "almoxarifado": {"insumos": 3, "sem_previsao": 0, "consumo_projetado": False, "falta_comprar": [
+        {"insumo_id": CIMENTO, "nome": "Cimento CP-II", "unidade": "sc", "falta": 34_000,
+         "texto": "precisa 200 sc − saldo 46 sc − a caminho 120 sc − em cotação 0 sc − transferência 0 sc = falta "
+                  "34 sc"},
+        {"insumo_id": BLOCO, "nome": "Bloco cerâmico 14x19x29", "unidade": "un", "falta": 2_040_000,
+         "texto": "precisa 4.800 un − saldo 2.760 un − a caminho 0 un − em cotação 0 un − transferência 0 un = "
+                  "falta 2.040 un"}]},
+    "pendencias": {"propostas": 0, "titulos": []},
 }

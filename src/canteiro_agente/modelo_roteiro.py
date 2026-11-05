@@ -10,6 +10,9 @@ lê e cita), nunca de constantes: se a API mudar o seed, a resposta muda junto.
 - "bloco" / "2.760": consultar_estoque → historico_movimentos → texto com a conta e a quebra. Não propõe nada.
 - "cimento": consultar_estoque → propor_pedido do que falta → texto curto.
 - "aço": consultar_estoque → texto: o que está em cotação já cobre, falta 0, não precisa pedir.
+- "como tá a obra" / "resumo" / "e aí": resumo_obra → resposta curta (uma frase, até cinco itens, o que falta
+  cadastrar numa linha no fim).
+- "quanto gasto/custa" + insumo: consultar_estoque → calcular (quantidade × último preço) → texto com a conta.
 - qualquer outra coisa: "não sei com segurança".
 
 Sem obra em foco, começa por listar_obras e usa a primeira. Não é o modelo: não tem raciocínio, não valida chave e
@@ -28,7 +31,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from canteiro_dominio.tipos import fmt_qtd
+from canteiro_dominio.tipos import fmt_qtd, fmt_reais
 
 # ---------------------------------------------------------------- formato da API (SSE e JSON)
 
@@ -153,6 +156,8 @@ def ler_conversa(mensagens: list[dict[str, Any]]) -> Conversa:
         achou = re.search(r"obra_id=([\w-]+)", b["text"])
         if b["text"].startswith("(Obra em foco") and achou:
             conv.obra_id = achou.group(1)
+        elif b["text"].startswith("(Hoje é "):
+            continue                         # contexto da data, não é a pergunta
         else:
             conv.texto += b["text"]
     nomes: dict[str, str] = {}
@@ -172,6 +177,10 @@ def ler_conversa(mensagens: list[dict[str, Any]]) -> Conversa:
 
 def intencao(texto_usuario: str) -> str:
     t = _sem_acento(texto_usuario)
+    if re.search(r"como (ta|esta|vai) a obra|\bresumo\b|^e ai\b", t.strip()):
+        return "resumo"
+    if re.search(r"quanto (eu )?(gasto|custa|sai|fica)", t):
+        return "custo"
     if "bloco" in t or "2.760" in t:
         return "blocos"
     if "cimento" in t:
@@ -210,6 +219,9 @@ def roteiro(conv: Conversa) -> list[dict[str, Any]]:
     alvo = intencao(conv.texto)
     if alvo == "desconhecido":
         return [texto(NAO_SEI)]
+    if alvo == "custo" and not any(k in _sem_acento(conv.texto) for k in ("cimento", "bloco", "aco", "areia",
+                                                                          "brita")):
+        return [texto("De qual material? Me diga o insumo e a quantidade.")]
 
     obra = conv.obra_id
     if obra is None:
@@ -220,7 +232,17 @@ def roteiro(conv: Conversa) -> list[dict[str, Any]]:
             return [texto("Não encontrei nenhuma obra na sua conta.")]
         obra = obras[0]["obra_id"]
 
-    busca = {"blocos": "bloco", "cimento": "cimento", "aco": "aço"}[alvo]
+    if alvo == "resumo":
+        r = conv.resultado("resumo_obra")
+        if r is None:
+            return [ferramenta("resumo_obra", {"obra_id": obra})]
+        return [texto(texto_resumo(r))]
+
+    if alvo == "custo":
+        busca = next(k for k in ("cimento", "bloco", "aço", "areia", "brita")
+                     if _sem_acento(k) in _sem_acento(conv.texto))
+    else:
+        busca = {"blocos": "bloco", "cimento": "cimento", "aco": "aço"}[alvo]
     estoque = conv.resultado("consultar_estoque")
     if estoque is None:
         return [antes_de_ferramenta("Vou conferir o almoxarifado."),
@@ -231,6 +253,23 @@ def roteiro(conv: Conversa) -> list[dict[str, Any]]:
     conta, fmt = item["conta_milesimos"], item["conta_formatada"]
     # A conta vai num parágrafo só dela, como a ferramenta devolveu: é o que a pessoa confere.
     cabeca = (f"{item['nome']}, pelo almoxarifado:", item["linha_conta"])
+
+    if alvo == "custo":
+        preco = item.get("ultimo_preco")
+        if not preco:
+            return [texto(f"{item['nome']} ainda não foi comprado nesta obra, então não há preço de referência. "
+                          "Com o preço do fornecedor eu faço a conta.")]
+        conta = conv.resultado("calcular")
+        if conta is None:
+            achou = re.search(r"(\d+(?:,\d+)?)", conv.texto)
+            quantidade = achou.group(1) if achou else "1"
+            unitario = fmt_reais(preco["unitario_centavos"]).removeprefix("R$ ")
+            un = item["unidade"]
+            return [ferramenta("calcular", {"expressao": f"{quantidade} [{un}] × {unitario} [R$/{un}]",
+                                            "unidade_resultado": "R$"})]
+        return [texto(paragrafos(
+            f"Dá **{conta['resultado']}** pelo último preço ({preco['pedido']}, {preco['fornecedor']}, "
+            f"{preco['data']}):", conta["conta"], "O preço de hoje só o fornecedor confirma."))]
 
     if alvo == "aco":
         if conta["falta"] == 0:
@@ -276,6 +315,42 @@ def roteiro(conv: Conversa) -> list[dict[str, Any]]:
         ),
         "Não proponho ajuste: o saldo já desconta a quebra.",
     ))]
+
+
+def texto_resumo(r: dict[str, Any]) -> str:
+    """O "como tá a obra?" no formato da instrução: a resposta numa frase, até cinco itens, o que falta cadastrar
+    numa linha no fim (nunca na abertura). Os números são os do resumo, citados como vieram."""
+    o, prazo, fin = r["obra"], r["prazo"], r["financeiro"]
+    if prazo.get("cadastrado") is False:
+        abertura = f"A {o['nome']} está {o['situacao']}."
+    else:
+        abertura = (f"A {o['nome']} está **{prazo['situacao_contra_atual'] or 'sem medição ainda'}**, com término "
+                    f"em {prazo['termino_projetado'] or prazo['termino_contratual']}"
+                    + (f" ({prazo['medido_x_previsto']})." if prazo.get("medido_x_previsto") else "."))
+    itens = []
+    if prazo.get("etapas_do_mes"):
+        itens.append(f"Em {prazo['mes_corrente']}: " + "; ".join(prazo["etapas_do_mes"]))
+    if prazo.get("etapas_atrasadas"):
+        itens.append("Atrasada: " + "; ".join(prazo["etapas_atrasadas"]))
+    if prazo.get("proximas"):
+        itens.append(f"Começa em {prazo['proximas']['mes']}: " + "; ".join(prazo["proximas"]["etapas"]))
+    if fin.get("tem_orcamento") is not False:
+        itens.append(f"Financeiro: comprometido {fin['comprometido']} de {fin['orcado_atual']} "
+                     f"(saldo {fin['saldo_a_comprometer']})")
+    ent = r["entregas"]
+    if ent["atrasadas"] or ent["hoje"]:
+        itens.append("Entregas: " + "; ".join([*(f"hoje {x}" for x in ent["hoje"]),
+                                               *(f"atrasada {x}" for x in ent["atrasadas"])]))
+    if r["almoxarifado"]["falta_comprar"]:
+        itens.append("Falta comprar: " + "; ".join(x.split(":")[0] for x in r["almoxarifado"]["falta_comprar"]))
+    if r["aprovacoes_pendentes"]["quantas"]:
+        itens.append(f"{r['aprovacoes_pendentes']['quantas']} proposta(s) aguardando aprovação")
+    partes = [abertura]
+    if itens:
+        partes.append(lista(*itens[:5]))
+    if r.get("falta_cadastrar"):
+        partes.append(" ".join(r["falta_cadastrar"]))
+    return paragrafos(*partes)
 
 
 def _tokens(dado: Any) -> int:

@@ -7,9 +7,9 @@ import pytest
 from falsos import ACO, OBRA, PED_ACO, PED_CIMENTO, TOKEN_SERVICO, TOKEN_USUARIO, Resposta, ferramenta, texto
 
 FERRAMENTAS = {
-    "listar_obras", "consultar_estoque", "historico_movimentos", "listar_pedidos",
-    "consultar_orcamento", "consultar_cronograma", "listar_fornecedores",
-    "propor_pedido", "propor_avanco_pedido", "propor_ajuste_estoque",
+    "listar_obras", "resumo_obra", "consultar_estoque", "historico_movimentos", "listar_pedidos",
+    "consultar_orcamento", "consultar_cronograma", "listar_fornecedores", "calcular",
+    "propor_pedido", "propor_entrega", "propor_avanco_pedido", "propor_ajuste_estoque",
 }
 
 
@@ -134,31 +134,36 @@ async def test_avanco_invalido_e_barrado_pela_regra_do_dominio(ambiente):
     assert "não pode ir de 'em_transito' para 'conferido'" in _texto_resultado(res)
 
 
-async def test_conferir_com_quantidade_recebida_e_nf_vai_nos_dados(ambiente):
+async def test_conferir_pedido_que_chegou_vai_para_a_entrega(ambiente):
+    """Conferir um pedido "recebido" daria entrada de tudo: a ferramenta de status recusa e aponta propor_entrega."""
     amb = ambiente([
         Resposta([ferramenta("propor_avanco_pedido", {
-            "obra_id": OBRA, "pedido_id": PED_CIMENTO, "para": "conferido", "justificativa": "mestre conferiu",
-            "quantidade_recebida": "110", "nf": " 4471 "})], stop_reason="tool_use"),
-        Resposta([texto("Proposta de conferência aguardando aprovação.")]),
+            "obra_id": OBRA, "pedido_id": PED_CIMENTO, "para": "conferido", "justificativa": "mestre conferiu"})],
+                 stop_reason="tool_use"),
+        Resposta([texto("Me diga quanto chegou.")]),
+    ])
+    await amb.conversar("chegou o cimento")
+    assert not amb.api.feitas("POST", "/propostas")
+    [res] = _tool_results(amb.anthropic.pedidos[1])
+    assert res["is_error"] is True and "propor_entrega" in _texto_resultado(res)
+
+
+async def test_entrega_com_quantidade_e_nf_vai_nos_dados(ambiente):
+    amb = ambiente([
+        Resposta([ferramenta("propor_entrega", {
+            "obra_id": OBRA, "pedido_id": PED_CIMENTO, "justificativa": "mestre conferiu",
+            "linhas": [{"indice": 0, "quantidade": "110"}], "nf_numero": " 4471 ", "nf_data": "05/11/2026",
+            "nf_valor": "4.180,00"})], stop_reason="tool_use"),
+        Resposta([texto("Proposta de entrada aguardando aprovação.")]),
     ])
     await amb.conversar("chegaram só 110 sacos do cimento, NF 4471")
     [corpo] = [c.corpo for c in amb.api.feitas("POST", "/propostas")]
-    assert corpo["dados"] == {"pedido_id": PED_CIMENTO, "para": "conferido", "quantidade_recebida": 110_000,
-                              "nf": "4471"}
-    assert corpo["titulo"] == "PED-0160: recebido → conferido · chegaram 110 de 120 sc (NF 4471)"
-
-
-async def test_quantidade_recebida_fora_da_conferencia_e_barrada(ambiente):
-    amb = ambiente([
-        Resposta([ferramenta("propor_avanco_pedido", {
-            "obra_id": OBRA, "pedido_id": PED_ACO, "para": "recebido", "justificativa": "chegou",
-            "quantidade_recebida": "3000"})], stop_reason="tool_use"),
-        Resposta([texto("Quantidade recebida só entra ao conferir.")]),
-    ])
-    await amb.conversar("o aço chegou, 3000 kg")
-    assert not amb.api.feitas("POST", "/propostas")
-    [res] = _tool_results(amb.anthropic.pedidos[1])
-    assert res["is_error"] is True and "só valem ao conferir" in _texto_resultado(res)
+    assert corpo["tipo"] == "registrar_entrega"
+    assert corpo["dados"] == {"pedido_id": PED_CIMENTO, "linhas": [{"indice": 0, "quantidade": 110_000}],
+                              "nf_numero": "4471", "nf_data": "2026-11-05", "nf_valor": 418_000}
+    assert corpo["titulo"] == "PED-0160: dar entrada de 110 sc de Cimento CP-II (NF 4471, 05/11/2026, R$ 4.180,00)"
+    # a conta da entrega é da API (domínio), não do agente
+    assert corpo["conta"] == ""
 
 
 async def test_sem_creditos_vira_erro_e_nao_chama_o_modelo(ambiente):

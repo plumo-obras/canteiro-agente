@@ -7,7 +7,7 @@ from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
 
 from canteiro_agente.modelo_roteiro import criar_app, intencao
 
-from falsos import OBRA
+from falsos import OBRA, OBRA_EMEI
 
 
 @pytest.fixture
@@ -33,6 +33,8 @@ def _texto(eventos):
 @pytest.mark.parametrize("frase,esperado", [
     ("por que o saldo de blocos é 2.760?", "blocos"), ("tem 2.760 mesmo?", "blocos"),
     ("falta cimento?", "cimento"), ("e o AÇO?", "aco"), ("vou acompanhar a obra", "desconhecido"),
+    ("e aí, como tá a obra?", "resumo"), ("me dá um resumo", "resumo"),
+    ("quanto eu gasto se comprar 10 sacos de cimento a mais?", "custo"),
 ])
 def test_intencao(frase, esperado):
     assert intencao(frase) == esperado
@@ -127,4 +129,59 @@ def test_instrucao_pede_markdown_e_e_estavel():
     from canteiro_agente.instrucao import INSTRUCAO
 
     assert "linha em branco" in INSTRUCAO and "###" in INSTRUCAO and '"- "' in INSTRUCAO
+    # o que o teste com o modelo real pediu: nome, calculadora, sem previsão ≠ não precisa, resumo primeiro
+    assert INSTRUCAO.startswith("Você é o Plumo") and "Canteiro" not in INSTRUCAO
+    assert "calcular" in INSTRUCAO and "nunca quer dizer que a obra não precisa" in INSTRUCAO
+    assert "resumo_obra" in INSTRUCAO and "no FIM" in INSTRUCAO
     assert not re.search(r"\d{4}-\d{2}-\d{2}|\{|\}", INSTRUCAO)
+
+
+async def test_resumo_responde_curto_e_deixa_o_que_falta_para_o_fim(com_roteiro):
+    amb = com_roteiro()
+    ev = await amb.conversar("e aí, como tá a obra?", obra_id=OBRA_EMEI)
+    assert _ferramentas(ev) == ["resumo_obra"]
+    t = _texto(ev)
+    paragrafos = t.split("\n\n")
+    assert paragrafos[0] == ("A EMEI Santa Clara do Sul está **em dia**, com término em ago/2027 (4,0% medido × "
+                             "3,9% previsto).")
+    itens = paragrafos[1].split("\n")
+    assert 1 <= len(itens) <= 5 and all(i.startswith("- ") for i in itens)
+    assert "Atrasada: 1 SERVIÇOS PRELIMINARES: 88,86% medido de 100% previsto" in t
+    # o que falta cadastrar fecha a resposta, sem negrito
+    assert "sem previsão" in paragrafos[-1] and "**" not in paragrafos[-1]
+    assert "resumo_obra" not in t and "2027-08" not in t
+
+
+async def test_resumo_de_obra_sem_cronograma_nem_orcamento(com_roteiro):
+    amb = com_roteiro()
+    t = _texto(await amb.conversar("como tá a obra?", obra_id=OBRA))
+    assert t.startswith("A Casa Vila Nova está em andamento.")
+    assert t.endswith("Cronograma não cadastrado: cadastre em Cronograma para acompanhar prazo e etapas. "
+                      "Orçamento não importado: importe em Orçamento para acompanhar custo por etapa.")
+    assert "atrasada PED-0158" in t
+
+
+async def test_custo_usa_o_ultimo_preco_e_a_calculadora(com_roteiro):
+    amb = com_roteiro()
+    ev = await amb.conversar("quanto eu gasto se comprar 10 sacos de cimento a mais?", obra_id=OBRA_EMEI)
+    assert _ferramentas(ev) == ["consultar_estoque", "calcular"]
+    t = _texto(ev)
+    assert "Dá **R$ 375,00** pelo último preço (PED-0169" in t
+    assert "\n\n10 sc × R$ 37,50/sc = R$ 375,00\n\n" in t
+
+
+async def test_data_de_hoje_vai_na_mensagem_e_nao_na_instrucao(ambiente):
+    from datetime import datetime
+
+    from canteiro_agente.conversa import FUSO, contexto_de_hoje
+
+    from falsos import Resposta, texto
+
+    assert contexto_de_hoje(datetime(2026, 11, 5, 17, 30, tzinfo=FUSO)) == (
+        "(Hoje é quinta-feira, 05/11/2026, 17:30 no horário de Brasília.)")
+    amb = ambiente([Resposta([texto("ok")])])
+    await amb.conversar("oi", obra_id=OBRA)
+    [p] = amb.anthropic.pedidos
+    primeiro = p["messages"][-1]["content"][0]["text"]
+    assert primeiro.startswith("(Hoje é ") and "horário de Brasília" in primeiro
+    assert "Hoje é" not in str(p["system"]) and "Hoje é" not in str(p["tools"])
