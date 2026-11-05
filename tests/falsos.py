@@ -42,6 +42,7 @@ class Chamada:
     caminho: str
     cabecalhos: dict[str, str]
     corpo: Any
+    params: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -107,7 +108,7 @@ class ApiFalsa:
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         corpo = json.loads(req.content) if req.content else None
-        self.chamadas.append(Chamada(req.method, req.url.path, dict(req.headers), corpo))
+        self.chamadas.append(Chamada(req.method, req.url.path, dict(req.headers), corpo, dict(req.url.params)))
         caminho, m = req.url.path, req.method
         if caminho == "/uso" and m == "POST":
             return httpx.Response(201, json=corpo)
@@ -166,6 +167,10 @@ class ApiFalsa:
             return httpx.Response(200, json=[])          # a Vila Nova da demonstração não tem orçamento em etapas
         if caminho == "/propostas" and m == "POST":
             return self._propor(corpo)
+        if caminho == "/propostas" and m == "GET":
+            st, obra = req.url.params.get("status"), req.url.params.get("obra_id")
+            return httpx.Response(200, json=[p for p in reversed(self.propostas.values())
+                                             if (not st or p["status"] == st) and (not obra or p["obra_id"] == obra)])
         return httpx.Response(404, json={"detail": f"rota falsa não conhece {m} {caminho}"})
 
     def _propor(self, corpo: dict[str, Any]) -> httpx.Response:

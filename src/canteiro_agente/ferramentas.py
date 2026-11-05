@@ -683,6 +683,26 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
                               "histórico de um insumo.")
         return _json(saida)
 
+    async def _com_pendentes(obra_id: str, pedidos: list[dict[str, Any]]) -> None:
+        """Põe em cada pedido as propostas pendentes dele (entrada, encerramento, status) e as compras novas pendentes
+        do mesmo insumo. Na rodada 3 do teste, "a brita do PED-0170 veio pela metade, quanto falta?" respondeu "quando
+        chegar, me avise que eu dou entrada" com a entrada da NF 4410 já esperando aprovação: o pedido não dizia."""
+        try:
+            pendentes = await api.propostas_pendentes(obra_id)
+        except ErroApi:
+            return              # sem a lista, o pedido sai como antes; a consulta principal não falha por isso
+        for p in pedidos:
+            insumos = {x["insumo_id"] for x in p["linhas"] if x.get("insumo_id")}
+            deste = [{"titulo": x.get("titulo"), "efeito": x.get("efeito") or x.get("tipo"),
+                      "criada_em": fmt_quando(x.get("criado_em"))}
+                     for x in pendentes if x.get("status", "pendente") == "pendente"
+                     and ((x.get("dados") or {}).get("pedido_id") == p["pedido_id"]
+                          or (x.get("tipo") == "criar_pedido" and (x.get("dados") or {}).get("insumo_id") in insumos))]
+            if deste:
+                p["propostas_pendentes"] = deste
+                p["nota_pendentes"] = ("Já esperando aprovação na tela; nada disso mudou o pedido ainda. Diga que "
+                                       "existe, e não ofereça propor de novo o que já está aí.")
+
     @beta_async_tool(eager_input_streaming=True)
     async def listar_pedidos(obra_id: str, status: StatusTexto | None = None, abertos: bool = False,
                              busca: str | None = None) -> str:
@@ -693,7 +713,8 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         uma entrega ou mudança de status, para achar o pedido_id. Quando chega material ("chegou a brita da pedreira",
         "dá entrada da NF"), procure com abertos=true e busca = o fornecedor ou o insumo: o pedido certo é o que tem
         recebe_entrega=true e falta_entregar. Status "parcial" = chegou parte, o resto continua a caminho e ainda recebe
-        entrega. Uma proposta ainda pendente não muda pedido nenhum: o pedido continua como está aqui.
+        entrega. Uma proposta ainda pendente não muda pedido nenhum: o pedido continua como está aqui; ela vem em
+        propostas_pendentes do pedido, e a resposta diz que ela já está esperando aprovação.
 
         Args:
             obra_id: ID da obra.
@@ -714,6 +735,8 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             pedidos = [p for p in pedidos if alvo in _sem_acento(p.get("fornecedor") or "")
                        or any(alvo in _sem_acento(x.get("nome") or "") for x in _linhas(p))]
         saida = [_pedido(p) for p in pedidos]
+        if saida:
+            await _com_pendentes(obra_id, saida)
         if not saida and (abertos or busca or status):
             return _json({"pedidos": [], "aviso": "Nenhum pedido com esse filtro. Tente sem a busca antes de dizer "
                                                   "que o pedido não existe."})
@@ -1028,16 +1051,24 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         if t["sem_etapa"]["comprometido"] or t["sem_etapa"]["cotando"]:
             saida["sem_etapa"] = {"comprometido": fmt_reais(t["sem_etapa"]["comprometido"]),
                                   "realizado_compras": fmt_reais(t["sem_etapa"]["realizado"])}
+        achados: list[dict[str, Any]] = []
+        if busca:
+            alvo = _sem_acento(busca)
+            achados = [x for x in o["itens"] if x["tipo"] == "item" and alvo in _sem_acento(x["descricao"])]
+        # A data futura de um aditivo só vai onde o aditivo importa: na visão geral (que o lista) ou numa busca que
+        # achou item dele. Busca de "cimento" para achar a etapa de uma compra não é sobre o aditivo, e o aviso fechava
+        # respostas sobre cimento e concreto (rodada 3 do teste). Continua uma vez por conversa (com_lembretes).
+        versoes_achadas = {x.get("versao_id") for x in achados}
         datas = {}
         for v in aditivos:
+            if busca and v["id"] not in versoes_achadas:
+                continue
             if (v.get("data") or "") > eventos.hoje.isoformat():
                 datas[f"data_futura:aditivo:{obra_id}:{v['numero']}"] = (
                     f"O aditivo {v['numero']} está com data {fmt_data(v['data'])}, depois de hoje: avise uma vez, "
                     "curto, que a data pode estar errada.")
         saida = eventos.com_lembretes(saida, datas)
         if busca:
-            alvo = _sem_acento(busca)
-            achados = [x for x in o["itens"] if x["tipo"] == "item" and alvo in _sem_acento(x["descricao"])]
             saida["itens_encontrados"] = [{
                 "numero": x["numero"], "etapa": x["etapa"], "codigo": x.get("codigo"), "fonte": x.get("fonte"),
                 "descricao": x["descricao"], "quantidade": _qtd_un(x["quantidade"], x["unidade"]),
@@ -1126,8 +1157,17 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
                           "pct_obra_acumulado": _pct(m["pct_obra_acumulado"]), "observacao": m.get("observacao")}
                          for m in c["medicoes"]],
         }
+        alvo = None
+        if mes:
+            alvo = _mes_iso(mes)
+            if alvo is None:
+                raise ToolError(f"Mês '{mes}' não entendido: use 2026-12 ou dez/2026.")
         datas = {}
         for m in c["medicoes"]:
+            # Pergunta de um mês ("o que vem em dezembro?") não é sobre a medição de outro mês: a data estranha na
+            # observação dela fica para quando as medições forem o assunto (visão geral ou o mês dela).
+            if alvo and m.get("mes") != alvo:
+                continue
             if (m.get("mes") or "") > eventos.hoje.isoformat()[:7]:
                 datas[f"data_futura:medicao:{obra_id}:{m['numero']}"] = (
                     f"A medição {m['numero']} é de {fmt_mes(m['mes'])}, mês que ainda não chegou: avise uma vez que o "
@@ -1138,10 +1178,7 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
                     f"A observação da medição {m['numero']} cita {', '.join(futuras)}, depois de hoje: avise uma vez, "
                     "curto, que a data pode estar errada.")
         saida = eventos.com_lembretes(saida, datas)
-        if mes:
-            alvo = _mes_iso(mes)
-            if alvo is None:
-                raise ToolError(f"Mês '{mes}' não entendido: use 2026-12 ou dez/2026.")
+        if alvo:
             if alvo not in meses:
                 saida["no_mes"] = {"mes": fmt_mes(alvo), "aviso": "Esse mês está fora do cronograma."}
             else:

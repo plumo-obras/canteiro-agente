@@ -131,6 +131,9 @@ class ApiCentral:
     async def fornecedores(self) -> list[dict[str, Any]]:
         return await self._req("GET", "/fornecedores")
 
+    async def propostas_pendentes(self, obra_id: str) -> list[dict[str, Any]]:
+        return await self._req("GET", "/propostas", params={"status": "pendente", "obra_id": obra_id, "limite": 100})
+
     async def criar_proposta(self, corpo: dict[str, Any]) -> dict[str, Any]:
         return await self._req("POST", "/propostas", json=corpo)
 

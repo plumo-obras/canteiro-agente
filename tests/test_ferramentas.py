@@ -130,7 +130,8 @@ async def test_acha_o_pedido_parcial_pelo_fornecedor_e_propoe_a_entrega(ferramen
     assert (p["numero"], p["status"], p["recebe_entrega"], p["previsao"]) == ("PED-0170", "parcial", True,
                                                                               "16/11/2026")
     assert (p["linhas"][0]["indice"], p["linhas"][0]["falta_entregar"]) == (0, "7 m³")
-    assert api.chamadas[-1].caminho.endswith("/pedidos")
+    assert api.chamadas[-2].caminho.endswith("/pedidos") and api.chamadas[-1].caminho == "/propostas"
+    assert "propostas_pendentes" not in p
     vazio = await _chamar(ferramentas, "listar_pedidos", obra_id=EMEI, abertos=True, busca="cimento")
     assert vazio["pedidos"] == [] and "não existe" in vazio["aviso"]
     r = json.loads(await fs["propor_entrega"].func(
@@ -290,3 +291,77 @@ async def test_pedido_pelo_preco_unitario_faz_a_conta_na_calculadora(ferramentas
     # milhar e decimal: 1.250,5 kg × R$ 7,50 = R$ 9.378,75
     from canteiro_agente.ferramentas import _conta_do_total
     assert _conta_do_total(1_250_500, 750, "kg").conta == "1.250,5 kg × R$ 7,50/kg = R$ 9.378,75"
+
+
+async def test_pedido_traz_as_propostas_pendentes_dele(ferramentas):
+    """Rodada 3: "a brita do PED-0170 veio pela metade" respondeu "me avise que eu dou entrada" com a entrada da
+    NF 4410 já esperando aprovação. O pedido agora traz o que está pendente para ele."""
+    fs, api = ferramentas
+    await fs["propor_entrega"].func(obra_id=EMEI, pedido_id=PED_BRITA, linhas=[{"indice": 0, "quantidade": "7"}],
+                                    justificativa="chegou o resto", nf_numero="4410", nf_valor="910,00")
+    ps = await _chamar(ferramentas, "listar_pedidos", obra_id=EMEI, busca="brita")
+    [p] = ps
+    assert [x["titulo"] for x in p["propostas_pendentes"]] == [
+        "PED-0170: dar entrada de 7 m³ de Brita 1 (NF 4410, 05/11/2026, R$ 910,00)"]
+    assert "não ofereça propor de novo" in p["nota_pendentes"]
+    # o pedido em si não muda: falta o mesmo
+    assert p["linhas"][0]["falta_entregar"] == "7 m³"
+    [get] = api.feitas("GET", "/propostas")
+    assert dict(get.params) == {"status": "pendente", "obra_id": EMEI, "limite": "100"}
+    # recusada ou aprovada sai da lista
+    next(iter(api.propostas.values()))["status"] = "recusada"
+    [p] = await _chamar(ferramentas, "listar_pedidos", obra_id=EMEI, busca="brita")
+    assert "propostas_pendentes" not in p
+
+
+async def test_compra_nova_pendente_do_mesmo_insumo_aparece_no_pedido(ferramentas):
+    fs, api = ferramentas
+    api.propostas["p-compra"] = {"id": "p-compra", "status": "pendente", "obra_id": EMEI, "tipo": "criar_pedido",
+                                 "efeito": "compra", "titulo": "Comprar 7 m³ de Brita 1 por R$ 910,00",
+                                 "dados": {"insumo_id": BRITA_EMEI}}
+    api.propostas["p-outra-obra"] = {"id": "p-outra-obra", "status": "pendente", "obra_id": OBRA,
+                                     "tipo": "criar_pedido", "titulo": "outra obra", "dados": {"insumo_id": BRITA_EMEI}}
+    ps = await _chamar(ferramentas, "listar_pedidos", obra_id=EMEI)
+    brita = next(p for p in ps if p["numero"] == "PED-0170")
+    assert [(x["titulo"], x["efeito"]) for x in brita["propostas_pendentes"]] == [
+        ("Comprar 7 m³ de Brita 1 por R$ 910,00", "compra")]
+    assert all("propostas_pendentes" not in p for p in ps if p["numero"] != "PED-0170")
+
+
+async def test_lista_de_propostas_fora_nao_derruba_os_pedidos(ferramentas, monkeypatch):
+    from canteiro_agente.api_central import ErroApi
+
+    async def falha(self, obra_id):
+        raise ErroApi(403, "sem acesso")
+
+    monkeypatch.setattr(ApiCentral, "propostas_pendentes", falha)
+    [p] = await _chamar(ferramentas, "listar_pedidos", obra_id=EMEI, busca="brita")
+    assert p["numero"] == "PED-0170" and "propostas_pendentes" not in p
+
+
+async def test_data_futura_do_aditivo_so_onde_o_aditivo_importa(ferramentas):
+    """Rodada 3: o aviso do aditivo saía no fim de respostas sobre cimento e concreto (busca no orçamento para achar a
+    etapa). Agora: visão geral ou busca que achou item do aditivo."""
+    chave = f"data_futura:aditivo:{EMEI}:1"
+    cimento = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI, busca="cimento")
+    assert "lembretes" not in cimento and "lembretes_ja_ditos" not in cimento
+    tapume = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI, busca="tapume")    # tem item do aditivo
+    assert list(tapume["lembretes"]) == [chave]
+    geral = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI)                     # uma vez por conversa
+    assert "lembretes" not in geral and geral["lembretes_ja_ditos"]["chaves"] == [chave]
+
+
+async def test_aviso_da_medicao_nao_sai_na_pergunta_de_outro_mes(monkeypatch):
+    import falsos
+
+    crono = json.loads(json.dumps(falsos.CRONOGRAMA_EMEI))
+    crono["medicoes"][0]["observacao"] = "aço das sapatas chegou em 30/11"
+    monkeypatch.setattr(falsos, "CRONOGRAMA_EMEI", crono)
+    api_falsa = ApiFalsa()
+    async with api_falsa.cliente() as http:
+        fs = {f.name: f for f in criar_ferramentas(ApiCentral(http, "http://api", TOKEN_USUARIO), Eventos(hoje=HOJE))}
+        dez = json.loads(await fs["consultar_cronograma"].call(
+            {"obra_id": EMEI, "mes": "dez/2026"}))
+        assert "lembretes" not in dez
+        geral = json.loads(await fs["consultar_cronograma"].call({"obra_id": EMEI}))
+        assert list(geral["lembretes"]) == [f"data_futura:medicao_obs:{EMEI}:1"]
