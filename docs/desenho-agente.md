@@ -26,7 +26,9 @@ o que pode propor, quanto custa e como sabemos se ficou bom. Código vem depois 
   240 s por resposta. Pergunta aberta começa por `resumo_obra`; a data de hoje vai na mensagem do usuário.
 - **Memória de curto prazo:** histórico em `sessoes`/`mensagens` na API, gravado a cada rodada; cache de prompt no
   prefixo fixo (ferramentas + instrução) e no histórico; limpeza de resultados antigos de ferramentas acima de 150 mil
-  tokens (nunca dos `propor_*`).
+  tokens (nunca dos `propor_*`). Lembretes de "uma vez por conversa" (falta de previsão ou de cadastro, data futura
+  num documento) têm chave: a ferramenta manda o texto na primeira vez (`lembretes`) e só a chave depois
+  (`lembretes_ja_ditos`); quem sabe o que já foi dito é o código, lendo os `tool_result` guardados da sessão.
 - **Propostas:** `criar_pedido`, `registrar_entrega` (o "Registrar entrega" da tela), `avancar_pedido` (status e
   encerramento, sem entrada), `ajuste_estoque` (pela contagem). Sem duplicata: cada `propor_*` manda a chave
   `"{sessao_id}:{tool_use_id}"`, e a API devolve a proposta pendente igual (mesma obra, tipo e dados) em vez de criar

@@ -12,7 +12,7 @@ import re
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Literal, TypedDict
 from zoneinfo import ZoneInfo
 
@@ -58,6 +58,42 @@ _SITUACAO = {"concluida": "concluída", "atrasada": "atrasada", "adiantada": "ad
              "nao_comecou": "não começou"}
 
 
+# Lembrete de "uma vez por conversa" (falta de previsão, de cadastro, data estranha num documento). No segundo teste
+# com o modelo real, "lance a previsão no almoxarifado" saiu em 13 de 34 respostas e o aviso de data futura em 4
+# seguidas: a ferramenta mandava o mesmo aviso a cada consulta e o modelo o repetia. Agora o aviso tem uma chave; a
+# primeira vez ele vai em `lembretes`, e daí em diante só a chave, em `lembretes_ja_ditos`. Quem lembra o que já foi
+# dito é o código (o histórico da sessão), não o modelo.
+NOTA_JA_DITO = "Já dito antes nesta conversa: não repita, a menos que a pessoa pergunte disso."
+
+
+def _texto_do_resultado(bloco: dict[str, Any]) -> str:
+    c = bloco.get("content")
+    if isinstance(c, str):
+        return c
+    return "".join(p.get("text", "") for p in c or [] if isinstance(p, dict))
+
+
+def lembretes_do_historico(mensagens: list[dict[str, Any]]) -> set[str]:
+    """As chaves de lembrete que alguma ferramenta já entregou nesta sessão (lidas dos tool_result guardados)."""
+    chaves: set[str] = set()
+    for m in mensagens:
+        if m.get("role") != "user" or not isinstance(m.get("content"), list):
+            continue
+        for b in m["content"]:
+            if not isinstance(b, dict) or b.get("type") != "tool_result":
+                continue
+            texto = _texto_do_resultado(b)
+            if '"lembretes"' not in texto:
+                continue
+            try:
+                dado = json.loads(texto)
+            except ValueError:
+                continue
+            if isinstance(dado, dict) and isinstance(dado.get("lembretes"), dict):
+                chaves.update(dado["lembretes"])
+    return chaves
+
+
 class LinhaEntregue(TypedDict):
     """Uma linha do pedido nesta entrega."""
     indice: int
@@ -79,6 +115,21 @@ class Eventos:
     # (nome, tool_use id, entrada) das chamadas da resposta em execução, na ordem do modelo
     chamadas: list[tuple[str, str, Any]] = field(default_factory=list)
     chamada_atual: str | None = None
+    # chaves de lembrete já entregues nesta sessão (conversa.py preenche pelo histórico guardado)
+    lembretes_dados: set[str] = field(default_factory=set)
+    # "hoje" em Brasília, para resolver "chegou hoje" e marcar data futura; fixável nos testes
+    hoje: date = field(default_factory=lambda: datetime.now(FUSO).date())
+
+    def com_lembretes(self, saida: dict[str, Any], lembretes: dict[str, str]) -> dict[str, Any]:
+        """Põe na saída os lembretes novos (texto) e só a chave dos que já foram dados nesta conversa."""
+        novos = {k: v for k, v in lembretes.items() if k not in self.lembretes_dados}
+        ja = [k for k in lembretes if k in self.lembretes_dados]
+        self.lembretes_dados |= set(novos)
+        if novos:
+            saida["lembretes"] = novos
+        if ja:
+            saida["lembretes_ja_ditos"] = {"chaves": ja, "nota": NOTA_JA_DITO}
+        return saida
 
     def _enviar(self, evento: tuple[str, dict[str, Any]]) -> None:
         if self.emitir is not None:
@@ -183,11 +234,19 @@ def _mes_iso(texto: str) -> str | None:
     return f"{a:04d}-{n:02d}" if 1 <= n <= 12 else None
 
 
-def _data_iso(texto: str | None) -> str | None:
-    """ "05/11/2026" ou "2026-11-05" → "2026-11-05" (o formato da API)."""
+_RELATIVOS = {"hoje": 0, "ontem": -1, "amanha": 1}
+
+
+def _data_iso(texto: str | None, hoje: date | None = None) -> str | None:
+    """ "05/11/2026", "2026-11-05" ou "hoje"/"ontem"/"amanhã" → "2026-11-05" (o formato da API). O relativo resolve
+    aqui, no fuso de Brasília: no teste, "chegou a brita hoje" deixou a data da NF em branco, porque o modelo não
+    tinha a data no formato que a ferramenta pedia."""
     if not texto:
         return None
     t = texto.strip()
+    relativo = _RELATIVOS.get(_sem_acento(t))
+    if relativo is not None:
+        return ((hoje or datetime.now(FUSO).date()) + timedelta(days=relativo)).isoformat()
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", t):
         return t
     if m := re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", t):
@@ -213,8 +272,8 @@ def linha_de_conta(conta: dict[str, Any], unidade: str) -> str:
     )
 
 
-AVISO_SEM_PREVISAO = ("Sem previsão lançada: o sistema não sabe quanto a obra precisa deste insumo. Isso NÃO quer "
-                      "dizer que não precisa; diga que a previsão não foi lançada.")
+AVISO_SEM_PREVISAO = ("Insumo(s) sem previsão lançada: o sistema não sabe quanto a obra precisa deles. Isso NÃO quer "
+                      "dizer que não precisa. Diga uma vez, no fim, que falta lançar a previsão no almoxarifado.")
 
 
 def _item_estoque(item: dict[str, Any]) -> dict[str, Any]:
@@ -231,8 +290,6 @@ def _item_estoque(item: dict[str, Any]) -> dict[str, Any]:
         "linha_conta": linha_de_conta(conta, un),
         "sem_previsao": bool(conta.get("sem_previsao", not conta.get("precisa"))),
     }
-    if saida["sem_previsao"]:
-        saida["aviso"] = AVISO_SEM_PREVISAO
     if conta.get("sobra"):
         saida["sobra"] = _qtd_un(conta["sobra"], un)
     preco = item.get("ultimo_preco")
@@ -327,18 +384,26 @@ def _entregas(xs: list[dict[str, Any]]) -> list[str]:
         + (f", previsto para {fmt_data(x['previsao'])}" if x.get("previsao") else "") for x in xs]
 
 
-def _resumo(r: dict[str, Any]) -> dict[str, Any]:
-    """Só formata o que a API somou (GET /obras/{id}/resumo). Bloco sem dado vira um aviso, que o modelo põe no fim
-    da resposta como próximo passo."""
+def _etapa_no_mes(x: dict[str, Any]) -> str:
+    """ "3 FUNDAÇÕES: 70% no mês (R$ 74.119,60), continua (adiantada)". Começa ou continua vem da API (`comeca`, pela
+    medição): o resumo dizia "em dezembro começam as Fundações" com 4,51% delas já medidos."""
+    t = f"{x['etapa']} {x['descricao']}: {_pct2(x['pct_no_mes'])} no mês ({fmt_reais(x['valor_no_mes'])})"
+    if x.get("comeca"):
+        return t + ", começa neste mês"
+    sit = _SITUACAO.get(x.get("situacao") or "")
+    if not sit or x.get("situacao") == "nao_comecou":
+        return t
+    return t + f", continua ({sit})"
+
+
+def _resumo(r: dict[str, Any], eventos: Eventos) -> dict[str, Any]:
+    """Só formata o que a API somou (GET /obras/{id}/resumo). Bloco sem dado vira um lembrete (uma vez por conversa),
+    que o modelo põe no fim da resposta como próximo passo."""
     o, c, f, e, a, pend = (r["obra"], r["cronograma"], r["financeiro"], r["entregas"], r["almoxarifado"],
                            r["pendencias"])
     status = {"em_andamento": "em andamento", "em_orcamento": "em orçamento", "concluida": "concluída"}
-    falta_cadastro = []
-
-    def etapa(x: dict[str, Any]) -> str:
-        t = f"{x['etapa']} {x['descricao']}: {_pct2(x['pct_no_mes'])} no mês ({fmt_reais(x['valor_no_mes'])})"
-        sit = _SITUACAO.get(x.get("situacao") or "")
-        return t + (f", {sit}" if sit and x.get("situacao") != "nao_comecou" else "")
+    falta_cadastro: dict[str, str] = {}
+    etapa = _etapa_no_mes
 
     if c["cadastrado"]:
         prazo: dict[str, Any] = {
@@ -353,9 +418,17 @@ def _resumo(r: dict[str, Any]) -> dict[str, Any]:
             "previsto_no_mes_corrente": _reais_ou_none(c.get("previsto_no_mes")),
             "pct_previsto_acumulado_no_fim_do_mes": _pct(c.get("pct_previsto_acumulado_no_mes")),
             "etapas_do_mes": [etapa(x) for x in c["etapas_do_mes"]],
-            "proximas": {"mes": fmt_mes(c["proximo_mes_com_inicio"]), "etapas": [etapa(x) for x in
-                                                                                c["proximas_etapas"]]}
-            if c.get("proximo_mes_com_inicio") else None,
+            # o mês seguinte inteiro, maior valor primeiro (só as que começavam deixava de fora a 2ª maior frente)
+            "proximo_mes": {"mes": fmt_mes(c["proximo_mes"]),
+                            "previsto": _reais_ou_none(c.get("previsto_no_proximo_mes")),
+                            "pct_previsto_acumulado_no_fim_do_mes":
+                                _pct(c.get("pct_previsto_acumulado_no_proximo_mes")),
+                            "etapas": [etapa(x) for x in c.get("etapas_do_proximo_mes") or []]}
+            if c.get("proximo_mes") else None,
+            # só quando é depois do mês seguinte: as que começam no seguinte já estão marcadas lá
+            "proxima_a_comecar": {"mes": fmt_mes(c["proximo_mes_com_inicio"]),
+                                  "etapas": [etapa(x) for x in c["proximas_etapas"]]}
+            if c.get("proximo_mes_com_inicio") and c["proximo_mes_com_inicio"] != c.get("proximo_mes") else None,
             "etapas_atrasadas": [f"{x['etapa']} {x['descricao']}: {_pct2(x['medido_acumulado'])} medido de "
                                  f"{_pct2(x['previsto_ate_referencia'])} previsto" for x in c["etapas_atrasadas"]],
         }
@@ -363,7 +436,8 @@ def _resumo(r: dict[str, Any]) -> dict[str, Any]:
             prazo["aviso"] = "Nenhuma medição lançada: ainda não há atraso para medir."
     else:
         prazo = {"cadastrado": False, "termino_contratual": fmt_mes(c.get("termino_contratual"))}
-        falta_cadastro.append("Cronograma não cadastrado: cadastre em Cronograma para acompanhar prazo e etapas.")
+        falta_cadastro[f"sem_cronograma:{o['id']}"] = ("Cronograma não cadastrado: cadastre em Cronograma para "
+                                                      "acompanhar prazo e etapas.")
     if f["tem_orcamento"]:
         financeiro: dict[str, Any] = {
             "orcado_atual": fmt_reais(f["orcado_atual"]), "aditivos": fmt_reais(f["aditivos"]),
@@ -376,16 +450,18 @@ def _resumo(r: dict[str, Any]) -> dict[str, Any]:
         financeiro = {"tem_orcamento": False}
         if f.get("comprometido"):
             financeiro["comprometido"] = fmt_reais(f["comprometido"])
-        falta_cadastro.append("Orçamento não importado: importe em Orçamento para acompanhar custo por etapa.")
+        falta_cadastro[f"sem_orcamento:{o['id']}"] = ("Orçamento não importado: importe em Orçamento para acompanhar "
+                                                     "custo por etapa.")
     almox: dict[str, Any] = {
         "falta_comprar": [f"{x['nome']}: {x['texto']}" for x in a["falta_comprar"]],
         "consumo_por_semana": "o sistema ainda não projeta consumo por semana; a falta é até o fim da obra",
     }
     if a.get("sem_previsao"):
         almox["insumos_sem_previsao"] = a["sem_previsao"]
-        falta_cadastro.append(f"{a['sem_previsao']} insumo(s) sem previsão de quantidade: sem ela, a falta deles não "
-                              "é calculada (o que não quer dizer que não precisa).")
-    return {
+        falta_cadastro[f"sem_previsao:{o['id']}"] = (
+            f"{a['sem_previsao']} insumo(s) sem previsão de quantidade: sem ela, a falta deles não é calculada (o que "
+            "não quer dizer que não precisa). Diga uma vez, no fim, que falta lançar a previsão no almoxarifado.")
+    return eventos.com_lembretes({
         "obra": {"obra_id": o["id"], "nome": o["nome"], "cidade": o.get("cidade"),
                  "situacao": status.get(o.get("status"), o.get("status"))},
         "hoje": fmt_data(r["hoje"]),
@@ -396,9 +472,34 @@ def _resumo(r: dict[str, Any]) -> dict[str, Any]:
                      "proximos_7_dias": _entregas(e["proximos_7_dias"]),
                      "sem_data_prevista": e["sem_previsao"], "nf_para_conferir": e["nf_para_conferir"]},
         "almoxarifado": almox,
-        "falta_cadastrar": falta_cadastro,
         "fonte": "resumo da obra (cronograma, orçamento, pedidos, almoxarifado e aprovações)",
-    }
+    }, falta_cadastro)
+
+
+def _conta_do_total(milesimos: int, centavos: int, unidade: str):
+    """quantidade × preço unitário pela calculadora (Decimal), a mesma do `calcular`: "7 m³ × R$ 130,00/m³ =
+    R$ 910,00". Os números vão sem separador de milhar, que a calculadora recusaria como ambíguo."""
+    quantidade = fmt_qtd(milesimos).replace(".", "")
+    preco = fmt_reais(centavos).replace("R$", "").replace(".", "").strip()
+    un = f" [{unidade}]" if unidade else ""
+    return _calcular(f"{quantidade}{un} × {preco} [R$/{unidade}]" if unidade else f"{quantidade} × {preco} [R$]",
+                     "R$")
+
+
+_DATA_NO_TEXTO = re.compile(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{4}))?\b")
+
+
+def _datas_futuras(texto: str | None, hoje: date) -> list[str]:
+    """Datas "30/11" ou "30/11/2026" escritas num texto livre (observação da medição) que ainda não chegaram."""
+    saida = []
+    for d, m, a in _DATA_NO_TEXTO.findall(texto or ""):
+        try:
+            quando = date(int(a) if a else hoje.year, int(m), int(d))
+        except ValueError:
+            continue
+        if quando > hoje:
+            saida.append(quando.strftime("%d/%m/%Y"))
+    return saida
 
 
 def _ler_qtd(texto: str, campo: str) -> int:
@@ -426,7 +527,7 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
                 return item
         raise ToolError("Esse insumo não existe nesta obra. Use consultar_estoque para achar o insumo_id certo.")
 
-    async def _propor(corpo: dict[str, Any]) -> str:
+    async def _propor(corpo: dict[str, Any], extra: dict[str, Any] | None = None) -> str:
         chave = eventos.chave_idempotencia()
         if chave:
             corpo = {**corpo, "chave_idempotencia": chave}
@@ -448,6 +549,7 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             "titulo": proposta.get("titulo"),
             "ja_existia": bool(proposta.get("ja_existia")),
             "aviso": aviso,
+            **(extra or {}),
         })
 
     def _com_chamada(ferramenta):
@@ -514,40 +616,72 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         if busca:
             alvo = _sem_acento(busca)
             itens = [i for i in itens if alvo in _sem_acento(i["insumo"]["nome"])]
-        return _json({"obra_id": obra_id, "fonte": "almoxarifado da obra",
-                      "insumos": [_item_estoque(i) for i in itens]})
+        saida = {"obra_id": obra_id, "fonte": "almoxarifado da obra", "insumos": [_item_estoque(i) for i in itens]}
+        if any(x["sem_previsao"] for x in saida["insumos"]):
+            # mesma chave do resumo: dito num, não se repete no outro
+            saida = eventos.com_lembretes(saida, {f"sem_previsao:{obra_id}": AVISO_SEM_PREVISAO})
+        return _json(saida)
+
+    def _movimento(m: dict[str, Any], un: str = "") -> dict[str, Any]:
+        return {
+            "tipo": m.get("tipo"),
+            "quantidade_milesimos": m.get("quantidade"),
+            "quantidade": _qtd_un(m.get("quantidade", 0), un),
+            "destino": m.get("destino"),
+            "etapa": m.get("etapa"),
+            "origem_doc": m.get("origem_doc"),
+            "quem": m.get("quem"),
+            "origem": m.get("origem"),
+            "quando": fmt_quando(m.get("criado_em")),
+        }
 
     @beta_async_tool(eager_input_streaming=True)
-    async def historico_movimentos(obra_id: str, insumo_id: str, limite: int = 20) -> str:
-        """Lista as últimas entradas, saídas e ajustes de um insumo (mais novos primeiro).
+    async def historico_movimentos(obra_id: str, insumo_id: str | None = None, limite: int = 30) -> str:
+        """Lista as últimas entradas, saídas e ajustes do almoxarifado (mais novos primeiro).
 
-        Use para explicar de onde veio um saldo, quem deu baixa, para onde foi o material ou qual NF/pedido entrou.
-        Não use para saber o saldo atual: consultar_estoque já traz a conta.
+        Sem insumo_id: os movimentos recentes de TODOS os insumos da obra ("histórico do almoxarifado"), numa
+        consulta só, cada um com o nome do insumo; se houver mais antigos que o limite, diz que cortou e quais insumos
+        ficaram fora da janela. Com insumo_id: só os daquele insumo. Use para explicar de onde veio um saldo, quem deu
+        baixa, para onde foi o material ou qual NF/pedido entrou. Não use para saber o saldo atual:
+        consultar_estoque já traz a conta.
 
         Args:
             obra_id: ID da obra.
-            insumo_id: ID do insumo (de consultar_estoque).
+            insumo_id: ID do insumo (de consultar_estoque). Omita para o histórico da obra inteira.
             limite: Quantos movimentos trazer, de 1 a 50.
         """
-        eventos.ferramenta("historico_movimentos", "consultou o histórico de movimentos")
+        n = max(1, min(limite, 50))
+        if insumo_id:
+            eventos.ferramenta("historico_movimentos", "consultou o histórico de movimentos")
+            try:
+                movs = await api.movimentos(obra_id, insumo_id, n)
+            except ErroApi as e:
+                raise _erro(e) from None
+            return _json([_movimento(m) for m in movs])
+        # A obra inteira numa leitura (antes, um insumo por chamada: o modelo consultava só os que já tinham
+        # aparecido na conversa e a brita ficou fora). Um a mais que o limite diz se há mais antigos.
+        eventos.ferramenta("historico_movimentos", "consultou o histórico de movimentos (todos os insumos)")
         try:
-            movs = await api.movimentos(obra_id, insumo_id, max(1, min(limite, 50)))
+            movs = await api.movimentos_da_obra(obra_id, n + 1)
+            itens = await api.insumos(obra_id)
         except ErroApi as e:
             raise _erro(e) from None
-        return _json([
-            {
-                "tipo": m.get("tipo"),
-                "quantidade_milesimos": m.get("quantidade"),
-                "quantidade": fmt_qtd(m.get("quantidade", 0)),
-                "destino": m.get("destino"),
-                "etapa": m.get("etapa"),
-                "origem_doc": m.get("origem_doc"),
-                "quem": m.get("quem"),
-                "origem": m.get("origem"),
-                "quando": fmt_quando(m.get("criado_em")),
-            }
-            for m in movs
-        ])
+        insumos = {i["insumo"]["id"]: i["insumo"] for i in itens}
+        cortou = len(movs) > n
+        movs = movs[:n]
+        saida: dict[str, Any] = {
+            "obra_id": obra_id, "fonte": "almoxarifado da obra (todos os insumos)",
+            "movimentos": [{"insumo": insumos.get(m.get("insumo_id"), {}).get("nome") or "insumo arquivado",
+                            "insumo_id": m.get("insumo_id"),
+                            **_movimento(m, insumos.get(m.get("insumo_id"), {}).get("unidade", ""))} for m in movs],
+            "mostrando": len(movs), "cortado": cortou,
+        }
+        if cortou:
+            vistos = {m.get("insumo_id") for m in movs}
+            saida["insumos_fora_desta_janela"] = [i["nome"] for k, i in insumos.items() if k not in vistos]
+            saida["aviso"] = (f"Só os {len(movs)} movimentos mais recentes; há mais antigos. Diga isso e ofereça o "
+                              "histórico de um insumo.")
+        return _json(saida)
 
     @beta_async_tool(eager_input_streaming=True)
     async def listar_pedidos(obra_id: str, status: StatusTexto | None = None, abertos: bool = False,
@@ -587,13 +721,14 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
 
     @beta_async_tool(eager_input_streaming=True)
     async def propor_pedido(
-        obra_id: str, insumo_id: str, quantidade: str, fornecedor: str, valor: str, justificativa: str,
-        etapa: str | None = None, previsao: str | None = None,
+        obra_id: str, insumo_id: str, quantidade: str, fornecedor: str, justificativa: str, valor: str | None = None,
+        preco_unitario: str | None = None, etapa: str | None = None, previsao: str | None = None,
     ) -> str:
         """Propõe um pedido de compra. NÃO compra: cria uma proposta que uma pessoa aprova ou recusa na tela.
 
         Use quando a pessoa pedir para comprar/pedir material e você já tiver insumo, quantidade, fornecedor e valor.
-        Se faltar algum desses dados, pergunte antes; preço por unidade vira valor total com calcular. A justificativa
+        Se faltar algum desses dados, pergunte antes. Se a pessoa deu o preço por unidade, mande preco_unitario: o
+        total (quantidade × preço) é calculado aqui e volta em conta_do_valor para você mostrar. A justificativa
         descreve a situação de AGORA: proposta pendente não aconteceu ("se o encerramento do PED-0170 for aprovado",
         nunca "PED-0170, encerrado"). Aprovada, a proposta vira um pedido já aprovado (a caminho), sem
         segunda aprovação; quem aprova pode corrigir quantidade, fornecedor, valor e previsão antes. A conta de falta
@@ -604,18 +739,36 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             insumo_id: ID do insumo (de consultar_estoque).
             quantidade: Quantidade na unidade do insumo, sem separador de milhar e com vírgula decimal: "3200", "1,5".
             fornecedor: Nome do fornecedor, como a pessoa disse.
-            valor: Valor total do pedido em reais, como a pessoa disse: "4720", "4.720,00", "1299,90".
+            valor: Valor total do pedido em reais, como a pessoa disse: "4720", "4.720,00", "1299,90". Omita se
+                ela deu só o preço por unidade.
+            preco_unitario: Preço por unidade do insumo em reais, se a pessoa deu ("130", "37,50"). Com valor também,
+                os dois têm de bater.
             justificativa: Uma frase com o motivo (ex.: "repor a falta de aço para a laje do 2º pavimento").
             etapa: Etapa do orçamento que paga a compra (a chave, ex.: "3"; de consultar_orcamento). Se a obra tem
                 orçamento e a pessoa não disse a etapa, pergunte. Omita só se a obra não tiver orçamento.
-            previsao: Data prevista de entrega, dd/mm/aaaa, se a pessoa disse.
+            previsao: Data prevista de entrega, dd/mm/aaaa (ou "hoje", "amanhã"), se a pessoa disse.
         """
         eventos.ferramenta("propor_pedido", "preparou uma proposta de pedido")
-        q, v = _ler_qtd(quantidade, "quantidade"), _ler_reais(valor)
-        if q <= 0 or v <= 0:
+        if not valor and not preco_unitario:
+            raise ToolError("Falta o valor: pergunte o total do pedido ou o preço por unidade.")
+        q = _ler_qtd(quantidade, "quantidade")
+        v = _ler_reais(valor) if valor else None
+        pu = _ler_reais(preco_unitario) if preco_unitario else None
+        if q <= 0 or (v is not None and v <= 0) or (pu is not None and pu <= 0):
             raise ToolError("Quantidade e valor têm de ser maiores que zero.")
         item = await _item_do_insumo(obra_id, insumo_id)
         un = item["insumo"].get("unidade", "")
+        extra: dict[str, Any] = {}
+        if pu is not None:
+            # O total sai da calculadora, com a conta à mostra: no teste o modelo escreveu "uns R$ 910,00" fazendo
+            # 7 × 130 de cabeça.
+            conta = _conta_do_total(q, pu, un)
+            total = int(conta.valor * 100)
+            if v is not None and v != total:
+                raise ToolError(f"O valor total {fmt_reais(v)} não bate com {conta.conta}. Confirme com a pessoa qual "
+                                "vale antes de propor.")
+            v = total
+            extra["conta_do_valor"] = conta.conta
         try:
             etapas = {e["etapa"]: e["descricao"] for e in await api.etapas(obra_id)}
         except ErroApi as e:
@@ -631,7 +784,7 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         if etapa:
             dados["etapa"] = etapa
         if previsao:
-            dados["previsao"] = _data_iso(previsao)
+            dados["previsao"] = _data_iso(previsao, eventos.hoje)
         return await _propor({
             "obra_id": obra_id,
             "tipo": "criar_pedido",
@@ -641,7 +794,7 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             "conta": linha_de_conta(item["conta"], un),
             "fonte": "almoxarifado da obra (conta calculada pelo sistema)",
             "dados": dados,
-        })
+        }, extra)
 
     async def _pedido_da_obra(obra_id: str, pedido_id: str) -> dict[str, Any]:
         try:
@@ -676,7 +829,8 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
                 sem separador de milhar e com vírgula decimal ("7", "1,5").
             justificativa: Uma frase com o que a pessoa disse (ex.: "chegaram hoje os 7 m³ restantes").
             nf_numero: Número da nota fiscal, como a pessoa disse.
-            nf_data: Data da nota, dd/mm/aaaa.
+            nf_data: Data da nota, dd/mm/aaaa, ou "hoje"/"ontem". Se a pessoa disse que chegou hoje e não deu outra
+                data, mande "hoje". Omitida com o número da nota, fica hoje (quem aprova pode corrigir).
             nf_valor: Valor da nota em reais, como a pessoa disse ("910", "910,00").
             confirmar_excesso: true só depois de a pessoa confirmar que chegou mais do que faltava.
         """
@@ -700,11 +854,18 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             partes.append(f"{_qtd_un(e['quantidade'], x.get('unidade', ''))} de {x.get('nome') or 'item'}")
         dados: dict[str, Any] = {"pedido_id": pedido_id, "linhas": entregas}
         nf = []
+        extra: dict[str, Any] = {}
         if nf_numero and nf_numero.strip():
             dados["nf_numero"] = nf_numero.strip()
             nf.append(f"NF {nf_numero.strip()}")
+            if not nf_data:
+                # A entrada é registrada no dia em que chega; nota sem data ficava em branco no cartão ("chegou a
+                # brita hoje" no teste). Quem aprova vê a data e corrige se a nota for de outro dia.
+                nf_data = "hoje"
+                extra["nf_data"] = (f"Data da nota não dita: ficou hoje, {fmt_data(eventos.hoje.isoformat())}; quem "
+                                    "aprova pode corrigir.")
         if nf_data:
-            dados["nf_data"] = _data_iso(nf_data)
+            dados["nf_data"] = _data_iso(nf_data, eventos.hoje)
             nf.append(fmt_data(dados["nf_data"]))
         if nf_valor:
             dados["nf_valor"] = _ler_reais(nf_valor)
@@ -721,7 +882,7 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             "conta": "",
             "fonte": f"pedido {pedido.get('numero')} ({pedido.get('fornecedor')})",
             "dados": dados,
-        })
+        }, extra)
 
     @beta_async_tool(eager_input_streaming=True)
     async def propor_avanco_pedido(obra_id: str, pedido_id: str, para: StatusTexto, justificativa: str) -> str:
@@ -867,6 +1028,13 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         if t["sem_etapa"]["comprometido"] or t["sem_etapa"]["cotando"]:
             saida["sem_etapa"] = {"comprometido": fmt_reais(t["sem_etapa"]["comprometido"]),
                                   "realizado_compras": fmt_reais(t["sem_etapa"]["realizado"])}
+        datas = {}
+        for v in aditivos:
+            if (v.get("data") or "") > eventos.hoje.isoformat():
+                datas[f"data_futura:aditivo:{obra_id}:{v['numero']}"] = (
+                    f"O aditivo {v['numero']} está com data {fmt_data(v['data'])}, depois de hoje: avise uma vez, "
+                    "curto, que a data pode estar errada.")
+        saida = eventos.com_lembretes(saida, datas)
         if busca:
             alvo = _sem_acento(busca)
             achados = [x for x in o["itens"] if x["tipo"] == "item" and alvo in _sem_acento(x["descricao"])]
@@ -958,6 +1126,18 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
                           "pct_obra_acumulado": _pct(m["pct_obra_acumulado"]), "observacao": m.get("observacao")}
                          for m in c["medicoes"]],
         }
+        datas = {}
+        for m in c["medicoes"]:
+            if (m.get("mes") or "") > eventos.hoje.isoformat()[:7]:
+                datas[f"data_futura:medicao:{obra_id}:{m['numero']}"] = (
+                    f"A medição {m['numero']} é de {fmt_mes(m['mes'])}, mês que ainda não chegou: avise uma vez que o "
+                    "mês pode estar errado.")
+            futuras = _datas_futuras(m.get("observacao"), eventos.hoje)
+            if futuras:
+                datas[f"data_futura:medicao_obs:{obra_id}:{m['numero']}"] = (
+                    f"A observação da medição {m['numero']} cita {', '.join(futuras)}, depois de hoje: avise uma vez, "
+                    "curto, que a data pode estar errada.")
+        saida = eventos.com_lembretes(saida, datas)
         if mes:
             alvo = _mes_iso(mes)
             if alvo is None:
@@ -983,10 +1163,11 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         ("como tá a obra?", "e aí?", "resumo", "o que tem pra hoje?"); as outras ferramentas só se a pessoa pedir
         detalhe.
 
-        Traz: situação da obra; prazo (término, atraso contra o atual e o original, % medido × previsto); etapas em
-        execução no mês, a próxima a começar e as atrasadas; financeiro (orçado atual, comprometido, realizado, saldo,
-        aditivos); propostas aguardando aprovação; entregas de hoje, atrasadas e da semana; insumos com falta para
-        comprar. Cada bloco diz quando o dado não existe (ex.: cronograma não cadastrado).
+        Traz: situação da obra; prazo (término, atraso contra o atual e o original, % medido × previsto); as etapas
+        do mês corrente e as do mês seguinte (maior valor primeiro; cada uma diz se começa ou continua, pela
+        medição), a próxima a começar depois disso e as atrasadas; financeiro (orçado atual, comprometido,
+        realizado, saldo, aditivos); propostas aguardando aprovação; entregas de hoje, atrasadas e da semana; insumos
+        com falta para comprar. O que não está cadastrado vem em lembretes.
 
         Args:
             obra_id: ID da obra.
@@ -996,7 +1177,7 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             r = await api.resumo_obra(obra_id)
         except ErroApi as e:
             raise _erro(e) from None
-        return _json(_resumo(r))
+        return _json(_resumo(r, eventos))
 
     @beta_async_tool(eager_input_streaming=True)
     async def calcular(expressao: str, unidade_resultado: str | None = None) -> str:

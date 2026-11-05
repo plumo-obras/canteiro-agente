@@ -317,6 +317,11 @@ def roteiro(conv: Conversa) -> list[dict[str, Any]]:
     ))]
 
 
+def _sem_pedido_de_repeticao(lembrete: str) -> str:
+    # o lembrete traz uma instrução ao modelo ("Diga uma vez, no fim, …"); o roteiro mostra só o fato
+    return lembrete.split(" Diga uma vez")[0]
+
+
 def texto_resumo(r: dict[str, Any]) -> str:
     """O "como tá a obra?" no formato da instrução: a resposta numa frase, até cinco itens, o que falta cadastrar
     numa linha no fim (nunca na abertura). Os números são os do resumo, citados como vieram."""
@@ -332,8 +337,12 @@ def texto_resumo(r: dict[str, Any]) -> str:
         itens.append(f"Em {prazo['mes_corrente']}: " + "; ".join(prazo["etapas_do_mes"]))
     if prazo.get("etapas_atrasadas"):
         itens.append("Atrasada: " + "; ".join(prazo["etapas_atrasadas"]))
-    if prazo.get("proximas"):
-        itens.append(f"Começa em {prazo['proximas']['mes']}: " + "; ".join(prazo["proximas"]["etapas"]))
+    if prazo.get("proximo_mes") and prazo["proximo_mes"]["etapas"]:
+        # o mês seguinte inteiro, como veio (maior valor primeiro; cada etapa diz se começa ou continua)
+        itens.append(f"Em {prazo['proximo_mes']['mes']}: " + "; ".join(prazo["proximo_mes"]["etapas"][:3]))
+    elif prazo.get("proxima_a_comecar"):
+        itens.append(f"Começa em {prazo['proxima_a_comecar']['mes']}: "
+                     + "; ".join(prazo["proxima_a_comecar"]["etapas"]))
     if fin.get("tem_orcamento") is not False:
         itens.append(f"Financeiro: comprometido {fin['comprometido']} de {fin['orcado_atual']} "
                      f"(saldo {fin['saldo_a_comprometer']})")
@@ -348,8 +357,9 @@ def texto_resumo(r: dict[str, Any]) -> str:
     partes = [abertura]
     if itens:
         partes.append(lista(*itens[:5]))
-    if r.get("falta_cadastrar"):
-        partes.append(" ".join(r["falta_cadastrar"]))
+    if r.get("lembretes"):
+        # só os novos: o que já foi dito nesta conversa vem em lembretes_ja_ditos e não se repete
+        partes.append(" ".join(_sem_pedido_de_repeticao(x) for x in r["lembretes"].values()))
     return paragrafos(*partes)
 
 

@@ -315,3 +315,32 @@ async def test_modo_roteiro_nao_desconta_credito_nem_usa_a_chave_propria(ambient
     assert amb.api.feitas("POST", "/uso") == []
     [(_, fim)] = [(e, d) for e, d in eventos if e == "fim"]
     assert fim["uso"] == {"custo": 0, "tokens": 0}
+
+
+async def test_lembrete_dado_numa_pergunta_nao_volta_na_seguinte(ambiente):
+    """"Lance a previsão no almoxarifado" saiu em 13 de 34 respostas: quem lembra o que já foi dito é o código, pelo
+    histórico guardado da sessão, e a segunda consulta manda só a chave."""
+    from falsos import OBRA_EMEI
+
+    amb = ambiente([
+        Resposta([ferramenta("consultar_estoque", {"obra_id": OBRA_EMEI})], stop_reason="tool_use"),
+        Resposta([texto("Cimento: 60 sc. Falta lançar a previsão no almoxarifado.")]),
+        Resposta([ferramenta("resumo_obra", {"obra_id": OBRA_EMEI}, "toolu_2")], stop_reason="tool_use"),
+        Resposta([texto("A obra está em dia.")]),
+    ])
+    primeira = await amb.conversar("quanto tem de cimento?", obra_id=OBRA_EMEI)
+    [r1] = _tool_results(amb.anthropic.pedidos[1])
+    assert f"sem_previsao:{OBRA_EMEI}" in json.loads(_texto_resultado(r1))["lembretes"]
+    await amb.conversar("como tá a obra?", sessao_id=primeira[-1][1]["sessao_id"], obra_id=OBRA_EMEI)
+    [r2] = _tool_results(amb.anthropic.pedidos[3])
+    resumo = json.loads(_texto_resultado(r2))
+    assert "lembretes" not in resumo
+    assert resumo["lembretes_ja_ditos"]["chaves"] == [f"sem_previsao:{OBRA_EMEI}"]
+
+
+def test_instrucao_pede_portugues_e_calculadora_ate_no_aproximado():
+    from canteiro_agente.instrucao import INSTRUCAO
+
+    assert 'a negação é "Não"' in INSTRUCAO and 'nunca "No"' in INSTRUCAO
+    assert '"uns", "cerca de" ou "daria", passa antes por calcular' in INSTRUCAO
+    assert "lembretes_ja_ditos" in INSTRUCAO and "uma vez por conversa" in INSTRUCAO

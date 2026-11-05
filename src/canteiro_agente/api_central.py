@@ -103,6 +103,9 @@ class ApiCentral:
             "GET", f"/obras/{_id(obra_id)}/insumos/{_id(insumo_id)}/movimentos", params={"limite": limite}
         )
 
+    async def movimentos_da_obra(self, obra_id: str, limite: int) -> list[dict[str, Any]]:
+        return await self._req("GET", f"/obras/{_id(obra_id)}/movimentos", params={"limite": limite})
+
     async def pedidos(self, obra_id: str, status: str | list[str] | None = None) -> list[dict[str, Any]]:
         # lista vira ?status=a&status=b, que a API lê como "in"
         params = {"status": status} if status else None

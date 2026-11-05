@@ -1,5 +1,6 @@
 """As ferramentas da Fase 5 contra a API dublada: o modelo recebe números prontos, nunca conta para fazer."""
 import json
+from datetime import date
 
 import pytest
 from anthropic.lib.tools import ToolError
@@ -10,12 +11,14 @@ from canteiro_agente.ferramentas import Eventos, criar_ferramentas
 from falsos import AREIA_EMEI, BRITA_EMEI, CIMENTO_EMEI, OBRA, PED_BRITA, TOKEN_USUARIO, ApiFalsa
 from falsos import OBRA_EMEI as EMEI
 
+HOJE = date(2026, 11, 5)
+
 
 @pytest.fixture
 async def ferramentas():
     api_falsa = ApiFalsa()
     async with api_falsa.cliente() as http:
-        fs = criar_ferramentas(ApiCentral(http, "http://api", TOKEN_USUARIO), Eventos())
+        fs = criar_ferramentas(ApiCentral(http, "http://api", TOKEN_USUARIO), Eventos(hoje=HOJE))
         yield {f.name: f for f in fs}, api_falsa
 
 
@@ -84,7 +87,7 @@ async def test_id_vindo_do_modelo_nao_vira_outra_rota():
 async def test_sem_previsao_nao_vira_nao_precisa_e_traz_o_ultimo_preco(ferramentas):
     e = await _chamar(ferramentas, "consultar_estoque", obra_id=EMEI, busca="cimento")
     [c] = e["insumos"]
-    assert c["sem_previsao"] is True and "NÃO quer dizer que não precisa" in c["aviso"]
+    assert c["sem_previsao"] is True and "NÃO quer dizer que não precisa" in e["lembretes"][f"sem_previsao:{EMEI}"]
     assert c["linha_conta"].startswith("sem previsão lançada") and "= falta" not in c["linha_conta"]
     assert c["ultimo_preco"] == {"unitario": "R$ 37,50/sc", "unitario_centavos": 3750, "pedido": "PED-0169",
                                  "fornecedor": "Materiais de Construção Vale do Taquari Ltda", "data": "03/11/2026"}
@@ -133,11 +136,13 @@ async def test_acha_o_pedido_parcial_pelo_fornecedor_e_propoe_a_entrega(ferramen
     r = json.loads(await fs["propor_entrega"].func(
         obra_id=EMEI, pedido_id=PED_BRITA, linhas=[{"indice": 0, "quantidade": "7"}],
         justificativa="chegou o resto da brita", nf_numero="4410", nf_valor="910,00"))
-    assert r["titulo"] == "PED-0170: dar entrada de 7 m³ de Brita 1 (NF 4410, R$ 910,00)"
+    # nota sem data dita: fica hoje, e a ferramenta diz isso ao modelo
+    assert r["titulo"] == "PED-0170: dar entrada de 7 m³ de Brita 1 (NF 4410, 05/11/2026, R$ 910,00)"
+    assert "ficou hoje, 05/11/2026" in r["nf_data"]
     [corpo] = [c.corpo for c in api.feitas("POST", "/propostas")]
     assert (corpo["tipo"], corpo["dados"]) == ("registrar_entrega", {
         "pedido_id": PED_BRITA, "linhas": [{"indice": 0, "quantidade": 7_000}], "nf_numero": "4410",
-        "nf_valor": 91_000})
+        "nf_data": "2026-11-05", "nf_valor": 91_000})
 
 
 async def test_encerrar_parcial_diz_que_nao_da_entrada(ferramentas):
@@ -169,13 +174,119 @@ async def test_resumo_da_obra_com_e_sem_cadastro(ferramentas):
     r = await _chamar(ferramentas, "resumo_obra", obra_id=EMEI)
     assert (r["obra"]["situacao"], r["hoje"]) == ("em andamento", "05/11/2026")
     assert r["prazo"]["etapas_atrasadas"] == ["1 SERVIÇOS PRELIMINARES: 88,86% medido de 100% previsto"]
-    assert r["prazo"]["proximas"]["mes"] == "dez/2026"
+    # a próxima a começar é dezembro, que já está no mês seguinte: não se repete à parte
+    assert r["prazo"]["proximo_mes"]["mes"] == "dez/2026" and r["prazo"]["proxima_a_comecar"] is None
     assert r["prazo"]["medido_x_previsto"] == "4,0% medido × 3,9% previsto"
     assert r["financeiro"]["aditivos_pct"] == "2,9%" and r["aprovacoes_pendentes"]["quantas"] == 1
-    assert any("sem previsão" in x for x in r["falta_cadastrar"])
+    assert "sem previsão" in r["lembretes"][f"sem_previsao:{EMEI}"]
     v = await _chamar(ferramentas, "resumo_obra", obra_id=OBRA)
     assert v["prazo"] == {"cadastrado": False, "termino_contratual": None}
     assert v["financeiro"] == {"tem_orcamento": False}
-    assert [x.split(":")[0] for x in v["falta_cadastrar"]] == ["Cronograma não cadastrado", "Orçamento não importado"]
+    assert [x.split(":")[0] for x in v["lembretes"].values()] == ["Cronograma não cadastrado",
+                                                                  "Orçamento não importado"]
     assert v["entregas"]["atrasadas"] == ["PED-0158 (Gerdau): 3.200 kg de Aço CA-50, previsto para 03/11/2026"]
     assert v["almoxarifado"]["falta_comprar"][0].startswith("Cimento CP-II: precisa 200 sc")
+
+
+# --- segundo teste com o modelo real (05/11/2026) ---
+
+async def test_resumo_lista_o_mes_seguinte_e_nao_diz_que_etapa_medida_comeca(ferramentas):
+    r = await _chamar(ferramentas, "resumo_obra", obra_id=EMEI)
+    dez = r["prazo"]["proximo_mes"]
+    assert (dez["mes"], dez["previsto"]) == ("dez/2026", "R$ 162.707,92")
+    assert dez["etapas"] == [
+        "3 FUNDAÇÕES: 70% no mês (R$ 74.119,60), continua (adiantada)",
+        "2 MOVIMENTO DE TERRA: 85% no mês (R$ 56.652,73), continua (adiantada)",
+        "23 SERVIÇOS COMPLEMENTARES: 25% no mês (R$ 17.973,12), continua (atrasada)",
+        "4 SUPERESTRUTURA: 10% no mês (R$ 11.295,68), começa neste mês",
+        "21 SPDA: 15% no mês (R$ 2.666,79), começa neste mês",
+    ]
+    assert not any("FUNDAÇÕES" in x and "começa" in x for x in json.dumps(r, ensure_ascii=False).split('"'))
+
+
+async def test_lembrete_sai_uma_vez_por_conversa(ferramentas):
+    r1 = await _chamar(ferramentas, "consultar_estoque", obra_id=EMEI)
+    assert f"sem_previsao:{EMEI}" in r1["lembretes"]
+    # a mesma falta de previsão, de novo pelo almoxarifado e pelo resumo: só a chave, como já dita
+    r2 = await _chamar(ferramentas, "consultar_estoque", obra_id=EMEI, busca="brita")
+    r3 = await _chamar(ferramentas, "resumo_obra", obra_id=EMEI)
+    for r in (r2, r3):
+        assert "lembretes" not in r
+        assert r["lembretes_ja_ditos"]["chaves"] == [f"sem_previsao:{EMEI}"]
+        assert "não repita" in r["lembretes_ja_ditos"]["nota"]
+    # data futura (aditivo de 20/11 com hoje 05/11): uma vez também
+    o1 = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI)
+    assert list(o1["lembretes"]) == [f"data_futura:aditivo:{EMEI}:1"] and "20/11/2026" in o1["lembretes"][
+        f"data_futura:aditivo:{EMEI}:1"]
+    o2 = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI)
+    assert "lembretes" not in o2 and o2["lembretes_ja_ditos"]["chaves"] == [f"data_futura:aditivo:{EMEI}:1"]
+
+
+def test_lembretes_ja_dados_saem_do_historico_guardado():
+    from canteiro_agente.ferramentas import lembretes_do_historico
+
+    resultado = json.dumps({"insumos": [], "lembretes": {"sem_previsao:obra-emei": "x"}})
+    mensagens = [
+        {"role": "user", "content": [{"type": "text", "text": "quanto tem de brita?"}]},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "consultar_estoque", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": resultado}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2",
+                                      "content": [{"type": "text", "text": json.dumps({"lembretes": {"b": "y"}})}]}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t3", "content": "não é json lembretes"}]},
+    ]
+    assert lembretes_do_historico(mensagens) == {"sem_previsao:obra-emei", "b"}
+
+
+async def test_cronograma_marca_data_futura_da_observacao_da_medicao():
+    from canteiro_agente.ferramentas import _datas_futuras
+
+    assert _datas_futuras("aço das sapatas chegou em 30/11", HOJE) == ["30/11/2026"]
+    assert _datas_futuras("chegou em 03/11/2026; nada em 31/02", HOJE) == []
+
+
+async def test_historico_sem_insumo_traz_todos_os_insumos_da_obra(ferramentas):
+    fs, api = ferramentas
+    h = await _chamar(ferramentas, "historico_movimentos", obra_id=EMEI)
+    assert api.chamadas[-2].caminho == f"/obras/{EMEI}/movimentos"            # uma leitura, a obra inteira
+    assert {m["insumo"] for m in h["movimentos"]} == {"Brita 1", "Cimento CP-II 50 kg", "Areia média"}
+    assert h["movimentos"][0] == {
+        "insumo": "Brita 1", "insumo_id": BRITA_EMEI, "tipo": "entrada", "quantidade_milesimos": 18_000,
+        "quantidade": "18 m³", "destino": None, "etapa": "3", "origem_doc": "PED-0170 · NF 4398",
+        "quem": "Engenheiro Responsável", "origem": "tela", "quando": "04/11/2026 10:00"}
+    assert (h["mostrando"], h["cortado"]) == (5, False) and "aviso" not in h
+    # limite menor que o total: diz que cortou e quais insumos ficaram fora da janela
+    c = await _chamar(ferramentas, "historico_movimentos", obra_id=EMEI, limite=1)
+    assert (c["mostrando"], c["cortado"]) == (1, True)
+    assert set(c["insumos_fora_desta_janela"]) == {"Cimento CP-II 50 kg", "Areia média"}
+    assert "mais antigos" in c["aviso"]
+
+
+async def test_entrega_aceita_hoje_na_data_da_nota(ferramentas):
+    fs, api = ferramentas
+    r = json.loads(await fs["propor_entrega"].func(
+        obra_id=EMEI, pedido_id=PED_BRITA, linhas=[{"indice": 0, "quantidade": "7"}],
+        justificativa="chegou a brita hoje", nf_numero="4410", nf_data="hoje", nf_valor="910"))
+    [corpo] = [c.corpo for c in api.feitas("POST", "/propostas")]
+    assert corpo["dados"]["nf_data"] == "2026-11-05" and "nf_data" not in r     # dita: sem aviso de padrão
+    from canteiro_agente.ferramentas import _data_iso
+    assert (_data_iso("ontem", HOJE), _data_iso("Amanhã", HOJE)) == ("2026-11-04", "2026-11-06")
+
+
+async def test_pedido_pelo_preco_unitario_faz_a_conta_na_calculadora(ferramentas):
+    fs, api = ferramentas
+    r = json.loads(await fs["propor_pedido"].func(
+        obra_id=EMEI, insumo_id=BRITA_EMEI, quantidade="7", fornecedor="Pedreira Lajeado Britagem Ltda",
+        preco_unitario="130,00", justificativa="repor os 7 m³", etapa="3"))
+    assert r["conta_do_valor"] == "7 m³ × R$ 130,00/m³ = R$ 910,00"
+    [corpo] = [c.corpo for c in api.feitas("POST", "/propostas")]
+    assert corpo["dados"]["valor"] == 91_000 and "R$ 910,00" in corpo["titulo"]
+    # total e unitário que não batem: pergunta antes, não escolhe
+    with pytest.raises(ToolError, match="não bate"):
+        await fs["propor_pedido"].func(obra_id=EMEI, insumo_id=BRITA_EMEI, quantidade="7", fornecedor="X",
+                                       valor="900", preco_unitario="130", justificativa="x", etapa="3")
+    with pytest.raises(ToolError, match="Falta o valor"):
+        await fs["propor_pedido"].func(obra_id=EMEI, insumo_id=BRITA_EMEI, quantidade="7", fornecedor="X",
+                                       justificativa="x", etapa="3")
+    # milhar e decimal: 1.250,5 kg × R$ 7,50 = R$ 9.378,75
+    from canteiro_agente.ferramentas import _conta_do_total
+    assert _conta_do_total(1_250_500, 750, "kg").conta == "1.250,5 kg × R$ 7,50/kg = R$ 9.378,75"

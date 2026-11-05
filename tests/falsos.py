@@ -153,6 +153,8 @@ class ApiFalsa:
         if caminho == f"/obras/{OBRA_EMEI}/pedidos":
             status = req.url.params.get_list("status")
             return httpx.Response(200, json=[p for p in PEDIDOS_EMEI if not status or p["status"] in status])
+        if caminho == f"/obras/{OBRA_EMEI}/movimentos" and m == "GET":
+            return httpx.Response(200, json=MOVIMENTOS_EMEI[: int(req.url.params.get("limite", 50))])
         if caminho == f"/obras/{OBRA_EMEI}/resumo":
             return httpx.Response(200, json=RESUMO_EMEI)
         if caminho == f"/obras/{OBRA}/resumo":
@@ -387,8 +389,29 @@ PEDIDOS_EMEI = [
 ]
 
 
+def _mov(insumo, tipo, q, quando, destino=None, doc=None):
+    return {"id": f"mov-{insumo}-{quando}", "obra_id": OBRA_EMEI, "insumo_id": insumo, "tipo": tipo, "quantidade": q,
+            "destino": destino, "etapa": "3", "origem_doc": doc, "quem": "Engenheiro Responsável", "origem": "tela",
+            "criado_em": quando}
+
+
+# GET /obras/{id}/movimentos: todos os insumos, mais novos primeiro (a brita é a mais nova e não apareceu no teste)
+MOVIMENTOS_EMEI = [
+    _mov(BRITA_EMEI, "entrada", 18_000, "2026-11-04T13:00:00Z", doc="PED-0170 · NF 4398"),
+    _mov(CIMENTO_EMEI, "saida", 60_000, "2026-11-03T19:44:00Z", destino="Sapatas (semana 4)"),
+    _mov(AREIA_EMEI, "saida", 20_000, "2026-11-03T19:44:00Z", destino="Sapatas (semana 4)"),
+    _mov(CIMENTO_EMEI, "entrada", 120_000, "2026-11-03T19:41:00Z", doc="PED-0169 · NF 1187"),
+    _mov(AREIA_EMEI, "entrada", 30_000, "2026-11-03T19:41:00Z", doc="PED-0169 · NF 552"),
+]
+
+
 def _obra(id_, nome, cidade, status="em_andamento"):
     return {"id": id_, "tenant_id": "t1", "nome": nome, "cidade": cidade, "status": status, "verba": 0}
+
+
+def _no_mes(etapa, descricao, pct, valor, previsto, medido, situacao, comeca=False):
+    return {"etapa": etapa, "descricao": descricao, "pct_no_mes": pct, "valor_no_mes": valor,
+            "previsto_ate_referencia": previsto, "medido_acumulado": medido, "situacao": situacao, "comeca": comeca}
 
 
 # GET /obras/{id}/resumo como a API calcula (servicos/resumo.py)
@@ -401,15 +424,22 @@ RESUMO_EMEI = {
         "atraso_base_decimos": 0, "revisoes": 0, "mes_ultima_medicao": "2026-11", "medicoes": 1,
         "pct_previsto_na_medicao": 391, "pct_medido": 396, "previsto_no_mes": 8195509,
         "pct_previsto_acumulado_no_mes": 391,
+        # como a API devolve desde o 2º teste com o modelo real: maior valor primeiro, `comeca` pela medição
+        # (Fundações já têm 4,51% medidos: continuam em dezembro, não começam) e o mês seguinte inteiro
         "etapas_do_mes": [
-            {"etapa": "1", "descricao": "SERVIÇOS PRELIMINARES", "pct_no_mes": 10000, "valor_no_mes": 8152981,
-             "previsto_ate_referencia": 10000, "medido_acumulado": 8886, "situacao": "atrasada"},
-            {"etapa": "2", "descricao": "MOVIMENTO DE TERRA", "pct_no_mes": 1500, "valor_no_mes": 999754,
-             "previsto_ate_referencia": 1500, "medido_acumulado": 2483, "situacao": "adiantada"}],
+            _no_mes("1", "SERVIÇOS PRELIMINARES", 10000, 8152981, 10000, 8886, "atrasada"),
+            _no_mes("23", "SERVIÇOS COMPLEMENTARES", 1500, 1078387, 1500, 1000, "atrasada"),
+            _no_mes("2", "MOVIMENTO DE TERRA", 1500, 999754, 1500, 2483, "adiantada")],
+        "proximo_mes": "2026-12", "previsto_no_proximo_mes": 16270792, "pct_previsto_acumulado_no_proximo_mes": 1170,
+        "etapas_do_proximo_mes": [
+            _no_mes("3", "FUNDAÇÕES", 7000, 7411960, 0, 451, "adiantada"),
+            _no_mes("2", "MOVIMENTO DE TERRA", 8500, 5665273, 1500, 2483, "adiantada"),
+            _no_mes("23", "SERVIÇOS COMPLEMENTARES", 2500, 1797312, 1500, 1000, "atrasada"),
+            _no_mes("4", "SUPERESTRUTURA", 1000, 1129568, 0, 0, "nao_comecou", comeca=True),
+            _no_mes("21", "SPDA", 1500, 266679, 0, 0, "nao_comecou", comeca=True)],
         "proximo_mes_com_inicio": "2026-12",
-        "proximas_etapas": [{"etapa": "4", "descricao": "SUPERESTRUTURA", "pct_no_mes": 10000,
-                             "valor_no_mes": 11295680, "previsto_ate_referencia": 0, "medido_acumulado": 0,
-                             "situacao": "nao_comecou"}],
+        "proximas_etapas": [_no_mes("4", "SUPERESTRUTURA", 1000, 1129568, 0, 0, "nao_comecou", comeca=True),
+                            _no_mes("21", "SPDA", 1500, 266679, 0, 0, "nao_comecou", comeca=True)],
         "etapas_atrasadas": [{"etapa": "1", "descricao": "SERVIÇOS PRELIMINARES", "medido_acumulado": 8886,
                               "previsto_ate_referencia": 10000, "atraso_pct": 1114}],
     },

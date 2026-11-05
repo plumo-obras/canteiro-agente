@@ -40,7 +40,7 @@ from canteiro_dominio.tipos import novo_id
 from .api_central import FORA_DO_AR, ApiCentral, ApiForaDoAr, ErroApi, registrar_uso
 from .chaves import FonteChaveCliente
 from .config import ESFORCO_POR_ROTA, Config
-from .ferramentas import NIVEIS, Eventos, criar_ferramentas
+from .ferramentas import NIVEIS, Eventos, criar_ferramentas, lembretes_do_historico
 from .instrucao import INSTRUCAO
 from .precos import ModeloSemPreco, Tokens, medir
 from .sessoes import HistoricoDivergiu, NaoEncontrada, RepositorioSessoes
@@ -359,7 +359,10 @@ async def _volta(
         estado["sessao_id"] = sessao.id
 
         historico = sessao.mensagens + [{"role": "user", "content": _conteudo_usuario(pedido)}]
-        eventos = Eventos(emitir=emitir, sessao_id=sessao.id)
+        # Lembrete já dado em outra pergunta desta sessão não volta como texto: a ferramenta manda só a chave, e o
+        # "lance a previsão no almoxarifado" deixa de aparecer em toda resposta.
+        eventos = Eventos(emitir=emitir, sessao_id=sessao.id,
+                          lembretes_dados=lembretes_do_historico(sessao.mensagens))
         ferramentas = criar_ferramentas(api, eventos)
         divergiu = False
         total, custo_total = Tokens(), 0
