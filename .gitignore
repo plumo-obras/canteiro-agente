@@ -1,5 +1,7 @@
 .DS_Store
-.claude/
+# .claude/ local fica fora; as skills do repositório entram
+.claude/*
+!.claude/skills/
 pesquisa/
 .env
 .env.*
