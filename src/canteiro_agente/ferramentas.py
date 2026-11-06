@@ -1072,15 +1072,17 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         if busca:
             alvo = _sem_acento(busca)
             achados = [x for x in o["itens"] if x["tipo"] == "item" and alvo in _sem_acento(x["descricao"])]
-        # A data futura de um aditivo só vai onde o aditivo importa: na visão geral (que o lista) ou numa busca que
-        # achou item dele. Busca de "cimento" para achar a etapa de uma compra não é sobre o aditivo, e o aviso fechava
-        # respostas sobre cimento e concreto (rodada 3 do teste). Continua uma vez por conversa (com_lembretes).
+        # A data futura de um aditivo só vira lembrete numa busca que achou item dele. Na visão geral o orçamento serve
+        # a "gasto por etapa" e "a fundação estourou?", e o lembrete fechava essas respostas também (rodadas 3 e 7 do
+        # teste): ali a data fica marcada no próprio aditivo, para o modelo avisar só se falar dele.
         versoes_achadas = {x.get("versao_id") for x in achados}
         datas = {}
-        for v in aditivos:
-            if busca and v["id"] not in versoes_achadas:
+        for v, item in zip(aditivos, saida["lista_aditivos"], strict=True):
+            if (v.get("data") or "") <= eventos.hoje.isoformat():
                 continue
-            if (v.get("data") or "") > eventos.hoje.isoformat():
+            if not busca:
+                item["data_depois_de_hoje"] = "pode estar errada: avise só se a resposta falar deste aditivo"
+            elif v["id"] in versoes_achadas:
                 datas[f"data_futura:aditivo:{obra_id}:{v['numero']}"] = (
                     f"O aditivo {v['numero']} está com data {fmt_data(v['data'])}, depois de hoje: avise uma vez, "
                     "curto, que a data pode estar errada.")

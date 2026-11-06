@@ -219,11 +219,11 @@ async def test_lembrete_sai_uma_vez_por_conversa(ferramentas):
         assert "lembretes" not in r
         assert r["lembretes_ja_ditos"]["chaves"] == [f"sem_previsao:{EMEI}"]
         assert "não repita" in r["lembretes_ja_ditos"]["nota"]
-    # data futura (aditivo de 20/11 com hoje 05/11): uma vez também
-    o1 = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI)
+    # data futura (aditivo de 20/11 com hoje 05/11) achada pela busca: uma vez também
+    o1 = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI, busca="tapume")
     assert list(o1["lembretes"]) == [f"data_futura:aditivo:{EMEI}:1"] and "20/11/2026" in o1["lembretes"][
         f"data_futura:aditivo:{EMEI}:1"]
-    o2 = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI)
+    o2 = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI, busca="tapume")
     assert "lembretes" not in o2 and o2["lembretes_ja_ditos"]["chaves"] == [f"data_futura:aditivo:{EMEI}:1"]
 
 
@@ -345,14 +345,18 @@ async def test_lista_de_propostas_fora_nao_derruba_os_pedidos(ferramentas, monke
 
 async def test_data_futura_do_aditivo_so_onde_o_aditivo_importa(ferramentas):
     """Rodada 3: o aviso do aditivo saía no fim de respostas sobre cimento e concreto (busca no orçamento para achar a
-    etapa). Agora: visão geral ou busca que achou item do aditivo."""
+    etapa). Rodada 7: saía também em "gasto por etapa" (visão geral). Agora o lembrete só vem na busca que achou item
+    do aditivo; na visão geral a data fica marcada no próprio aditivo."""
     chave = f"data_futura:aditivo:{EMEI}:1"
+    geral = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI)
+    assert "lembretes" not in geral and "lembretes_ja_ditos" not in geral
+    assert "avise só se" in geral["lista_aditivos"][0]["data_depois_de_hoje"]
     cimento = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI, busca="cimento")
     assert "lembretes" not in cimento and "lembretes_ja_ditos" not in cimento
     tapume = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI, busca="tapume")    # tem item do aditivo
-    assert list(tapume["lembretes"]) == [chave]
-    geral = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI)                     # uma vez por conversa
-    assert "lembretes" not in geral and geral["lembretes_ja_ditos"]["chaves"] == [chave]
+    assert list(tapume["lembretes"]) == [chave] and "data_depois_de_hoje" not in tapume["lista_aditivos"][0]
+    de_novo = await _chamar(ferramentas, "consultar_orcamento", obra_id=EMEI, busca="tapume")   # uma vez por conversa
+    assert "lembretes" not in de_novo and de_novo["lembretes_ja_ditos"]["chaves"] == [chave]
 
 
 async def test_aviso_da_medicao_nao_sai_na_pergunta_de_outro_mes(monkeypatch):
