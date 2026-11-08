@@ -37,6 +37,7 @@ NIVEIS: dict[str, Nivel] = {
     "consultar_orcamento": "consulta",
     "consultar_cronograma": "consulta",
     "listar_fornecedores": "consulta",
+    "consultar_tributos": "consulta",
     # não fala com a API: é a calculadora. Fica como consulta porque não escreve nada.
     "calcular": "consulta",
     "propor_pedido": "propoe",
@@ -516,6 +517,74 @@ def _ler_reais(texto: str) -> int:
         return reais(texto.replace("R$", "").strip())
     except (ValueError, ArithmeticError) as e:
         raise ToolError(f"valor inválido: {e}") from None
+
+
+MAX_GASTOS_TRIBUTOS = 10
+
+
+def fmt_cno(cno: str | None) -> str | None:
+    """900123456789 → 90.012.34567/89 (a máscara do Cadastro Nacional de Obras)."""
+    if not cno or len(cno) != 12:
+        return cno or None
+    return f"{cno[:2]}.{cno[2:5]}.{cno[5:10]}/{cno[10:]}"
+
+
+def _gasto_tributo(g: dict[str, Any]) -> dict[str, Any]:
+    return {"favorecido": g.get("favorecido"), "descricao": g.get("descricao"), "valor": fmt_reais(g["valor"]),
+            "data": fmt_data(g.get("data_pagamento"))}
+
+
+_FATOR_AJUSTE = {
+    "aplicado": "aplicado: a remuneração declarada passa do mínimo e a DCTFWeb está em dia, nada a pagar na aferição",
+    "atingido": "atingido: falta só confirmar a DCTFWeb entregue em todos os meses para o INSS zerar",
+    "nao_atingido": "não atingido",
+    "nao_se_aplica": "não se aplica (só obra de pessoa física)",
+}
+
+
+def _tributos(t: dict[str, Any]) -> dict[str, Any]:
+    """Os dois tributos com as linhas da conta como a API montou (a conta é do domínio, aqui só se formata)."""
+    i, b = t["inss"], t["ibs_cbs"]
+    inss: dict[str, Any] = {"situacao": i["situacao"], "motivos": i["motivos"], "linhas_conta": i["linhas"]}
+    if i["situacao"] == "calculado":
+        inss |= {
+            "valor_estimado_centavos": i["inss"], "valor_estimado": fmt_reais(i["inss"]),
+            "mao_de_obra_presumida": fmt_reais(i["rmt"]), "comprovado_pelos_gastos": fmt_reais(i["comprovado"]),
+            "base": fmt_reais(i["base"]), "fator_social": _pct2(i["fator_social"]) if i["fator_social"] < 10000
+            else None,
+            "mao_de_obra_paga_sem_nota": fmt_reais(i["mao_de_obra_sem_nf"]),
+            "notas_sem_o_cno_da_obra": fmt_reais(i.get("notas_sem_cno", 0)),
+            "economia_se_tiver_nota_centavos": i["economia_com_notas"],
+            "economia_se_tiver_nota": fmt_reais(i["economia_com_notas"]),
+            # fator de ajuste (só obra de pessoa física): com remuneração declarada suficiente e a DCTFWeb em dia,
+            # o INSS da aferição vai a zero; "falta_declarar" é o caminho para chegar lá
+            "fator_de_ajuste": _FATOR_AJUSTE.get(i.get("fator_ajuste", "")),
+            "falta_declarar_para_o_fator_de_ajuste": fmt_reais(i["falta_fator_ajuste"])
+            if i.get("fator_ajuste") == "nao_atingido" else None,
+            "avisos": i.get("avisos", []),
+        }
+    ibs: dict[str, Any] = {"situacao": b["situacao"], "motivos": b["motivos"], "linhas_conta": b["linhas"],
+                           "transicao": b["transicao"], "creditos_das_compras": fmt_reais(b["creditos"])}
+    if b["situacao"] == "calculado":
+        ibs |= {"a_pagar_centavos": b["a_pagar"], "a_pagar": fmt_reais(b["a_pagar"]), "debito": fmt_reais(b["debito"]),
+                "base": fmt_reais(b["base"]), "aliquota_efetiva": _pct2(b["aliquota_efetiva"])}
+    return {
+        "obra_id": t["obra_id"],
+        "fonte": "tributos estimados pelo sistema (INSS da aferição e IBS/CBS)",
+        "cno": fmt_cno(t.get("cno")),
+        "mes_do_vau": fmt_mes(t.get("vau_referencia")),
+        "aferida_em": fmt_mes(t.get("afericao")),
+        # de onde veio o m² da conta: a tabela oficial do SERO para a UF e a destinação, ou um valor à mão da obra
+        "vau": fmt_reais(t["vau_usado"]) + "/m²" if t.get("vau_usado") else None,
+        "origem_do_vau": {"tabela_sero": "tabela VAU oficial do SERO (Receita)", "informado": "informado na obra"}.get(
+            t.get("vau_fonte") or ""),
+        "inss": inss,
+        "ibs_cbs": ibs,
+        "gastos_a_classificar": {"quantos": t["a_classificar"], "valor": fmt_reais(t["valor_a_classificar"])},
+        "mao_de_obra_sem_nota": [_gasto_tributo(g) for g in t["sem_nota"][:MAX_GASTOS_TRIBUTOS]],
+        "pendentes_de_classificar": [_gasto_tributo(g) for g in t["pendentes"][:MAX_GASTOS_TRIBUTOS]],
+        "aviso": t["aviso"],
+    }
 
 
 def _gastos_por_comprovante(g: dict[str, Any] | None) -> dict[str, str] | None:
@@ -1278,6 +1347,28 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         return _json([{"nome": f["nome"], "cnpj": f.get("cnpj") or None, "contato": f.get("contato") or None,
                        "telefone": f.get("telefone") or None, "email": f.get("email") or None} for f in fs])
 
+    @beta_async_tool(eager_input_streaming=True)
+    async def consultar_tributos(obra_id: str) -> str:
+        """Os tributos da obra estimados pelo sistema: o INSS da aferição (CNO/SERO) e o IBS/CBS da reforma tributária.
+
+        Traz, para cada um, a situação (calculado, isenta, não incide, sem dados), os motivos, as linhas_conta prontas
+        (área para cálculo, custo, mão de obra presumida, comprovado corrigido pela Selic, base, valor), e no INSS
+        quanto cairia se a mão de obra sem nota (ou com nota sem o CNO da obra) fosse comprovada, o fator de ajuste
+        (quanto falta declarar para o INSS zerar) e os avisos; no IBS/CBS, débito, créditos das compras e a fase da
+        transição. Também lista os pagamentos de mão de obra sem comprovação e os gastos ainda sem classificação.
+        Use para "quanto vou pagar de INSS?", "CNO", "aferição", "SERO", "fator de ajuste", "IBS/CBS", "imposto da
+        obra", "como pago menos imposto?". Cite as linhas_conta como vieram; é estimativa.
+
+        Args:
+            obra_id: ID da obra.
+        """
+        eventos.ferramenta("consultar_tributos", "consultou os tributos da obra")
+        try:
+            t = await api.tributos(obra_id)
+        except ErroApi as e:
+            raise _erro(e) from None
+        return _json(_tributos(t))
+
     return [
         listar_obras,
         resumo_obra,
@@ -1287,6 +1378,7 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         consultar_orcamento,
         consultar_cronograma,
         listar_fornecedores,
+        consultar_tributos,
         calcular,
         _com_chamada(propor_pedido),
         _com_chamada(propor_entrega),
