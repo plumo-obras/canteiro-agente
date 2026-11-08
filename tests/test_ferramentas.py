@@ -373,3 +373,38 @@ async def test_aviso_da_medicao_nao_sai_na_pergunta_de_outro_mes(monkeypatch):
         assert "lembretes" not in dez
         geral = json.loads(await fs["consultar_cronograma"].call({"obra_id": EMEI}))
         assert list(geral["lembretes"]) == [f"data_futura:medicao_obs:{EMEI}:1"]
+
+
+async def test_tributos_traz_as_linhas_e_a_economia_com_nota(ferramentas):
+    t = await _chamar(ferramentas, "consultar_tributos", obra_id=OBRA)
+    assert (t["cno"], t["mes_do_vau"]) == ("90.012.34567/89", "out/2026")
+    assert (t["vau"], t["origem_do_vau"]) == ("R$ 2.000,00/m²", "tabela VAU oficial do SERO (Receita)")
+    i = t["inss"]
+    assert (i["situacao"], i["valor_estimado"], i["valor_estimado_centavos"]) == ("calculado", "R$ 5.246,52",
+                                                                                  524_652)
+    assert (i["fator_social"], i["base"], i["economia_se_tiver_nota"]) == ("40%", "R$ 14.256,85", "R$ 1.472,00")
+    assert i["linhas_conta"][6] == "INSS = R$ 14.256,85 × 36,8% = R$ 5.246,52"
+    assert (i["fator_de_ajuste"], i["falta_declarar_para_o_fator_de_ajuste"]) == ("não atingido", "R$ 3.480,00")
+    assert t["aferida_em"] == "nov/2026"
+    b = t["ibs_cbs"]
+    assert b["situacao"] == "nao_incide" and "a_pagar" not in b and b["creditos_das_compras"] == "R$ 300,00"
+    assert t["mao_de_obra_sem_nota"] == [{"favorecido": "Zé Empreiteiro", "descricao": "alvenaria do térreo",
+                                          "valor": "R$ 10.000,00", "data": "30/10/2026"}]
+    assert t["gastos_a_classificar"] == {"quantos": 1, "valor": "R$ 700,00"}
+    assert "contador" in t["aviso"]
+
+
+async def test_tributos_sem_dados_nao_inventa_valor(monkeypatch):
+    import falsos
+
+    t0 = falsos.TRIBUTOS_VILA
+    monkeypatch.setattr(falsos, "TRIBUTOS_VILA", {
+        **t0, "inss": {**t0["inss"], "situacao": "sem_dados", "linhas": [],
+                       "motivos": ["Falta informar a área construída da obra."]},
+        "ibs_cbs": {**t0["ibs_cbs"], "situacao": "calculado", "a_pagar": 3_625_000, "debito": 6_625_000,
+                    "base": 50_000_000, "aliquota_efetiva": 1325}})
+    async with ApiFalsa().cliente() as http:
+        fs = {f.name: f for f in criar_ferramentas(ApiCentral(http, "http://api", TOKEN_USUARIO), Eventos(hoje=HOJE))}
+        t = json.loads(await fs["consultar_tributos"].call({"obra_id": OBRA}))
+    assert "valor_estimado" not in t["inss"] and t["inss"]["motivos"]
+    assert (t["ibs_cbs"]["a_pagar"], t["ibs_cbs"]["aliquota_efetiva"]) == ("R$ 36.250,00", "13,25%")

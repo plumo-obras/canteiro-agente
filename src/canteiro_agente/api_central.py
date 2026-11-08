@@ -128,6 +128,9 @@ class ApiCentral:
     async def cronograma(self, obra_id: str) -> dict[str, Any]:
         return await self._req("GET", f"/obras/{_id(obra_id)}/cronograma")
 
+    async def tributos(self, obra_id: str) -> dict[str, Any]:
+        return await self._req("GET", f"/obras/{_id(obra_id)}/tributos")
+
     async def fornecedores(self) -> list[dict[str, Any]]:
         return await self._req("GET", "/fornecedores")
 

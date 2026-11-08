@@ -160,6 +160,8 @@ class ApiFalsa:
             return httpx.Response(200, json=RESUMO_EMEI)
         if caminho == f"/obras/{OBRA}/resumo":
             return httpx.Response(200, json=RESUMO_VILA)
+        if caminho == f"/obras/{OBRA}/tributos":
+            return httpx.Response(200, json=TRIBUTOS_VILA)
         if caminho == "/fornecedores":
             return httpx.Response(200, json=[{"id": "f1", "nome": "Depósito São Jorge", "cnpj": "11222333000181",
                                               "contato": "Jorge", "telefone": "51 9999", "email": ""}])
@@ -480,4 +482,44 @@ RESUMO_VILA = {
          "texto": "precisa 4.800 un − saldo 2.760 un − a caminho 0 un − em cotação 0 un − transferência 0 un = "
                   "falta 2.040 un"}]},
     "pendencias": {"propostas": 0, "titulos": []},
+}
+
+
+# GET /obras/{id}/tributos da Vila Nova: os números da conta do domínio (canteiro_dominio.tributos), à mão.
+TRIBUTOS_VILA = {
+    "obra_id": OBRA, "cno": "900123456789", "vau_referencia": "2026-10",
+    "vau_usado": 200_000, "vau_fonte": "tabela_sero",
+    "afericao": "2026-11", "categoria": "obra_nova", "selic_ate": "2026-10",
+    "inss": {"situacao": "calculado", "motivos": [], "area_equivalente": 143_500, "custo_obra": 28_700_000,
+             "rmt": 2_296_000, "fator_social": 4000, "percentual_rmt": 2000, "percentual_categoria": 10000,
+             "pre_moldado": None, "nao_decadente": 10000, "comprovado": 870_315,
+             "comprovado_por_natureza": {"mao_de_obra_nf": 800_000, "concreto_usinado": 70_315},
+             "credito_concreto": 70_315, "credito_autonomo": 0, "base": 1_425_685, "inss_sem_fator_ajuste": 524_652,
+             "inss": 524_652, "fator_ajuste": "nao_atingido", "fator_ajuste_minimo": 5000,
+             "creditos_fator_ajuste": 800_000, "falta_fator_ajuste": 348_000, "economia_com_notas": 147_200,
+             "mao_de_obra_sem_nf": 1_000_000, "notas_sem_cno": 0, "selic_faltando": [], "avisos": [],
+             "linhas": ["área para cálculo = 150 m² × 89% (equivalência) + 20 m² × 50% = 143,5 m²",
+                        "custo da obra = VAU R$ 2.000,00/m² × 143,5 m² = R$ 287.000,00",
+                        "mão de obra presumida (RMT) = R$ 287.000,00 × 20% (alvenaria) × fator social 40% = "
+                        "R$ 22.960,00",
+                        "crédito do concreto usinado = R$ 287.000,00 × 4,9% (Anexo I, SP) × 5% = R$ 703,15",
+                        "remuneração comprovada (corrigida pela Selic) = R$ 8.000,00",
+                        "base = R$ 22.960,00 − R$ 8.703,15 = R$ 14.256,85",
+                        "INSS = R$ 14.256,85 × 36,8% = R$ 5.246,52",
+                        "fator de ajuste: faltam R$ 3.480,00 de remuneração declarada para chegar a 50% da RMT e "
+                        "zerar o INSS",
+                        "R$ 10.000,00 de mão de obra sem nota (ou sem o CNO na nota): comprovada, o INSS cairia "
+                        "R$ 1.472,00"]},
+    "ibs_cbs": {"situacao": "nao_incide", "aliquota_efetiva": 0, "valor_operacao": 0, "redutor_ajuste": 0,
+                "redutor_social": 0, "base": 0, "debito": 0, "creditos": 30_000, "a_pagar": 0,
+                "motivos": ["Obra para uso próprio não é venda nem prestação de serviço: não há IBS/CBS sobre ela."],
+                "transicao": "2026 é ano de teste: CBS 0,9% e IBS 0,1% destacados na nota e compensáveis.",
+                "linhas": []},
+    "a_classificar": 1, "valor_a_classificar": 70_000,
+    "sem_nota": [{"id": "g1", "valor": 1_000_000, "data_pagamento": "2026-10-30", "favorecido": "Zé Empreiteiro",
+                  "descricao": "alvenaria do térreo", "natureza_fiscal": "mao_de_obra_sem_nf"}],
+    "pendentes": [{"id": "g2", "valor": 70_000, "data_pagamento": "2026-11-02", "favorecido": "Elétrica Luz",
+                   "descricao": "fios", "natureza_fiscal": None}],
+    "parametros": {"inss": {}, "ibs_cbs": {}},
+    "aviso": "Estimativa feita com os dados da obra; confira com o contador antes de pagar ou declarar.",
 }

@@ -30,6 +30,7 @@ ENTRADAS: dict[str, dict] = {
     "consultar_orcamento": {"obra_id": OBRA_EMEI},
     "consultar_cronograma": {"obra_id": OBRA_EMEI},
     "listar_fornecedores": {},
+    "consultar_tributos": {"obra_id": OBRA},
     "calcular": {"expressao": "7 [m³] × 130 [R$/m³]", "unidade_resultado": "R$"},
     "propor_pedido": {"obra_id": OBRA, "insumo_id": CIMENTO, "quantidade": "34", "fornecedor": "Votorantim",
                       "valor": "1292", "justificativa": "repor a falta"},

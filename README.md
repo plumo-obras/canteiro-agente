@@ -49,12 +49,12 @@ silêncios (proxy e função da Vercel derrubam conexão parada).
 
 ### Ferramentas (`ferramentas.py`)
 
-13 ferramentas, criadas por requisição (fecham sobre o token da conversa), mas com nome, descrição e esquema sempre
+14 ferramentas, criadas por requisição (fecham sobre o token da conversa), mas com nome, descrição e esquema sempre
 nos mesmos bytes.
 
 - **Leitura:** `listar_obras`, `resumo_obra`, `consultar_estoque`, `historico_movimentos`, `listar_pedidos`,
-  `consultar_orcamento`, `consultar_cronograma`, `listar_fornecedores`. Devolvem o número bruto e o formatado, e a
-  linha de conta pronta para citar.
+  `consultar_orcamento`, `consultar_cronograma`, `listar_fornecedores`, `consultar_tributos` (INSS da aferição e
+  IBS/CBS estimados). Devolvem o número bruto e o formatado, e a linha de conta pronta para citar.
 - **Calculadora:** `calcular` (`calculo.py`). Toda conta que não veio pronta passa por ela: Decimal, árvore sintática
   restrita, sem `eval`. Devolve "7 m³ × R$ 130,00/m³ = R$ 910,00".
 - **Proposta:** `propor_pedido`, `propor_entrega`, `propor_avanco_pedido`, `propor_ajuste_estoque`. Criam
@@ -185,7 +185,7 @@ para acordar.
 src/canteiro_agente/
   main.py            FastAPI: /conversa (SSE), /leituras/comprovante, /saude
   conversa.py        a volta: créditos → Tool Runner → uso → histórico; trava por sessão, timeout, ping
-  ferramentas.py     as 13 ferramentas (leitura, calcular, propor_*), lembretes, idempotência
+  ferramentas.py     as 14 ferramentas (leitura, calcular, propor_*), lembretes, idempotência
   instrucao.py       a instrução do agente (texto fixo: é o prefixo em cache)
   api_central.py     cliente da API com o token do usuário; ApiForaDoAr; validação de id
   calculo.py         a calculadora (Decimal, AST restrita)

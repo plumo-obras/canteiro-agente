@@ -13,6 +13,7 @@ lê e cita), nunca de constantes: se a API mudar o seed, a resposta muda junto.
 - "como tá a obra" / "resumo" / "e aí": resumo_obra → resposta curta (uma frase, até cinco itens, o que falta
   cadastrar numa linha no fim).
 - "quanto gasto/custa" + insumo: consultar_estoque → calcular (quantidade × último preço) → texto com a conta.
+- "imposto" / "INSS" / "tributo" / "IBS" / "CBS" / "CNO": consultar_tributos → as linhas da conta de cada tributo.
 - qualquer outra coisa: "não sei com segurança".
 
 Sem obra em foco, começa por listar_obras e usa a primeira. Não é o modelo: não tem raciocínio, não valida chave e
@@ -179,6 +180,9 @@ def intencao(texto_usuario: str) -> str:
     t = _sem_acento(texto_usuario)
     if re.search(r"como (ta|esta|vai) a obra|\bresumo\b|^e ai\b", t.strip()):
         return "resumo"
+    # antes do "quanto custa": "quanto vou pagar de imposto?" é sobre tributo, não sobre insumo
+    if re.search(r"\b(impostos?|inss|tributos?|ibs|cbs|cno|afericao|sero)\b", t):
+        return "tributos"
     if re.search(r"quanto (eu )?(gasto|custa|sai|fica)", t):
         return "custo"
     if "bloco" in t or "2.760" in t:
@@ -237,6 +241,13 @@ def roteiro(conv: Conversa) -> list[dict[str, Any]]:
         if r is None:
             return [ferramenta("resumo_obra", {"obra_id": obra})]
         return [texto(texto_resumo(r))]
+
+    if alvo == "tributos":
+        t = conv.resultado("consultar_tributos")
+        if t is None:
+            return [antes_de_ferramenta("Vou conferir os tributos da obra."),
+                    ferramenta("consultar_tributos", {"obra_id": obra})]
+        return [texto(texto_tributos(t))]
 
     if alvo == "custo":
         busca = next(k for k in ("cimento", "bloco", "aço", "areia", "brita")
@@ -360,6 +371,28 @@ def texto_resumo(r: dict[str, Any]) -> str:
     if r.get("lembretes"):
         # só os novos: o que já foi dito nesta conversa vem em lembretes_ja_ditos e não se repete
         partes.append(" ".join(_sem_pedido_de_repeticao(x) for x in r["lembretes"].values()))
+    return paragrafos(*partes)
+
+
+def texto_tributos(t: dict[str, Any]) -> str:
+    """INSS e IBS/CBS com as linhas da conta como vieram, e o aviso de estimativa no fim."""
+    i, b = t["inss"], t["ibs_cbs"]
+    if i["situacao"] == "calculado":
+        partes = [f"O INSS da obra fica em **{i['valor_estimado']}** se a aferição fosse hoje:",
+                  lista(*i["linhas_conta"])]
+        if i.get("economia_se_tiver_nota_centavos"):
+            partes.append(f"Com nota fiscal para os {i['mao_de_obra_paga_sem_nota']} de mão de obra pagos sem nota, "
+                          f"o INSS cairia **{i['economia_se_tiver_nota']}**.")
+    else:
+        partes = ["INSS da obra: " + " ".join(i["motivos"])]
+    if b["situacao"] == "calculado":
+        partes += [f"IBS/CBS estimado a pagar: **{b['a_pagar']}**.", lista(*b["linhas_conta"]), b["transicao"]]
+    else:
+        partes.append("IBS/CBS: " + " ".join(b["motivos"]))
+    if t["gastos_a_classificar"]["quantos"]:
+        partes.append(f"{t['gastos_a_classificar']['quantos']} gasto(s) ({t['gastos_a_classificar']['valor']}) "
+                      "ainda sem classificação fiscal: classifique em Tributos para entrarem na conta.")
+    partes.append("É estimativa: confira com o contador antes de pagar ou declarar.")
     return paragrafos(*partes)
 
 

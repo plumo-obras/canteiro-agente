@@ -35,6 +35,8 @@ def _texto(eventos):
     ("falta cimento?", "cimento"), ("e o AÇO?", "aco"), ("vou acompanhar a obra", "desconhecido"),
     ("e aí, como tá a obra?", "resumo"), ("me dá um resumo", "resumo"),
     ("quanto eu gasto se comprar 10 sacos de cimento a mais?", "custo"),
+    ("quanto vou pagar de imposto?", "tributos"), ("e o INSS da obra?", "tributos"), ("e o IBS/CBS?", "tributos"),
+    ("qual o CNO?", "tributos"), ("como fica a aferição?", "tributos"),
 ])
 def test_intencao(frase, esperado):
     assert intencao(frase) == esperado
@@ -185,3 +187,18 @@ async def test_data_de_hoje_vai_na_mensagem_e_nao_na_instrucao(ambiente):
     primeiro = p["messages"][-1]["content"][0]["text"]
     assert primeiro.startswith("(Hoje é ") and "horário de Brasília" in primeiro
     assert "Hoje é" not in str(p["system"]) and "Hoje é" not in str(p["tools"])
+
+
+async def test_tributos_cita_as_linhas_e_a_economia(com_roteiro):
+    amb = com_roteiro()
+    ev = await amb.conversar("Quanto vou pagar de INSS nesta obra?", obra_id=OBRA)
+    assert _ferramentas(ev) == ["consultar_tributos"]
+    assert not amb.api.feitas("POST", "/propostas")
+    t = _texto(ev)
+    assert "**R$ 5.246,52**" in t
+    assert "- INSS = R$ 14.256,85 × 36,8% = R$ 5.246,52" in t                 # a linha como a API montou
+    assert "faltam R$ 3.480,00 de remuneração declarada" in t
+    assert "cairia **R$ 1.472,00**" in t
+    assert "IBS/CBS: Obra para uso próprio" in t
+    assert "1 gasto(s) (R$ 700,00)" in t
+    assert t.rstrip().endswith("confira com o contador antes de pagar ou declarar.")
