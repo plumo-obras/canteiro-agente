@@ -76,7 +76,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=2.3" },
-    { name = "canteiro-dominio", git = "https://github.com/plumo-obras/canteiro-api?subdirectory=dominio&tag=dominio-v0.5.0" },
+    { name = "canteiro-dominio", git = "https://github.com/plumo-obras/canteiro-api?subdirectory=dominio&tag=dominio-v0.7.0" },
     { name = "fastapi", specifier = ">=0.120" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "httpx2", specifier = ">=2.16" },
@@ -90,8 +90,8 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "canteiro-dominio"
-version = "0.5.0"
-source = { git = "https://github.com/plumo-obras/canteiro-api?subdirectory=dominio&tag=dominio-v0.5.0#132349854f5fc15420f8f0b70a25bf3206a1bc8c" }
+version = "0.7.0"
+source = { git = "https://github.com/plumo-obras/canteiro-api?subdirectory=dominio&tag=dominio-v0.7.0#d273c80a261c7ed7ea979fa3dd6e09a1cd4d71b5" }
 dependencies = [
     { name = "pydantic" },
 ]
