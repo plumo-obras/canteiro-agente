@@ -194,5 +194,5 @@ async def test_resultados_antigos_de_ferramenta_sao_limpos_no_servidor(ambiente)
     assert edicao["trigger"] == {"type": "input_tokens", "value": 150_000}
     assert edicao["clear_at_least"] == {"type": "input_tokens", "value": 30_000}
     # O que foi proposto nunca some da vista do modelo (senão ele propõe de novo).
-    assert edicao["exclude_tools"] == ["propor_ajuste_estoque", "propor_avanco_pedido",
+    assert edicao["exclude_tools"] == ["propor_ajuste_estoque", "propor_avanco_pedido", "propor_cronograma",
                                          "propor_entrega", "propor_pedido"]

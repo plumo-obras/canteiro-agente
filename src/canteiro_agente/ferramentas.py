@@ -44,6 +44,7 @@ NIVEIS: dict[str, Nivel] = {
     "propor_entrega": "propoe",
     "propor_avanco_pedido": "propoe",
     "propor_ajuste_estoque": "propoe",
+    "propor_cronograma": "propoe",
 }
 # Ferramentas que não chamam a API (o teste de "só propõe" confere que elas não fazem requisição nenhuma).
 LOCAIS = {"calcular"}
@@ -99,6 +100,24 @@ class LinhaEntregue(TypedDict):
     """Uma linha do pedido nesta entrega."""
     indice: int
     quantidade: str
+
+
+class EtapaDoCronograma(TypedDict):
+    """Uma etapa do orçamento na sequência da obra: onde começa e quanto dura."""
+    etapa: str
+    mes_inicio: int
+    meses: int
+
+
+def _grade_cronograma(de: int, ate: int, meses: int) -> list[int]:
+    """O % de uma etapa distribuído igualmente entre os meses [de, ate] (0-based), somando 10000 (100%). O sistema faz
+    a conta; o modelo só decide a sequência e a duração."""
+    n = ate - de + 1
+    base, resto = divmod(10000, n)
+    fora = [0] * meses
+    for i in range(de, ate + 1):
+        fora[i] = base + (1 if (i - de) < resto else 0)
+    return fora
 
 
 @dataclass
@@ -1369,6 +1388,55 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             raise _erro(e) from None
         return _json(_tributos(t))
 
+    @beta_async_tool(eager_input_streaming=True)
+    async def propor_cronograma(obra_id: str, inicio: str, etapas: list[EtapaDoCronograma], justificativa: str) -> str:
+        """Propõe o cronograma físico-financeiro da obra. NÃO grava: cria uma proposta que uma pessoa aprova na tela.
+
+        Use quando a pessoa pedir para montar/gerar o cronograma e a obra já tiver orçamento (as etapas vêm dele, por
+        consultar_orcamento). VOCÊ decide a sequência e a duração de cada etapa pela lógica de obra (fundação antes de
+        estrutura antes de acabamento, com a sobreposição que fizer sentido); a conta — o % de cada etapa por mês — é
+        feita pelo sistema, não por você. Toda etapa do orçamento deve entrar uma vez. Aprovada, a proposta grava o
+        cronograma, e quem aprova pode desfazer.
+
+        Args:
+            obra_id: ID da obra.
+            inicio: Mês de início da obra, "AAAA-MM" ou "mm/aaaa".
+            etapas: A sequência das etapas, cada uma com: etapa (a chave do orçamento, ex.: "1", de
+                consultar_orcamento), mes_inicio (em que mês da obra ela começa; 1 = o primeiro mês) e meses (quantos
+                meses dura). As etapas podem se sobrepor.
+            justificativa: Uma frase com o critério (ex.: "fundação → estrutura → acabamento, duração pelo porte").
+        """
+        eventos.ferramenta("propor_cronograma", "preparou uma proposta de cronograma")
+        if not etapas:
+            raise ToolError("Diga as etapas com mes_inicio e meses (a sequência da obra).")
+        inicio_iso = _mes_iso(inicio)
+        if not inicio_iso:
+            raise ToolError("Início inválido: use AAAA-MM (ex.: 2026-01).")
+        plano = []
+        for e in etapas:
+            try:
+                mi, dur = int(e["mes_inicio"]), int(e["meses"])
+            except (KeyError, TypeError, ValueError):
+                raise ToolError("Cada etapa precisa de etapa, mes_inicio e meses — inteiros ≥ 1.") from None
+            if mi < 1 or dur < 1:
+                raise ToolError("Cada etapa precisa de mes_inicio ≥ 1 e meses ≥ 1.")
+            plano.append((str(e["etapa"]), mi - 1, mi - 1 + dur - 1))
+        meses = max(ate for _, _, ate in plano) + 1
+        if meses > 60:
+            raise ToolError("O cronograma passa de 60 meses; reduza as durações.")
+        dados_etapas = [{"etapa": et, "percentuais": _grade_cronograma(de, ate, meses)} for et, de, ate in plano]
+        n = len(plano)
+        corpo = {
+            "tipo": "cronograma",
+            "obra_id": obra_id,
+            "titulo": "Cronograma da obra",
+            "conta": f"{n} {'etapa' if n == 1 else 'etapas'} · {meses} {'mes' if meses == 1 else 'meses'}",
+            "justificativa": justificativa,
+            "fonte": "orçamento da obra (etapas e valores)",
+            "dados": {"inicio": inicio_iso, "meses": meses, "etapas": dados_etapas},
+        }
+        return await _propor(corpo)
+
     return [
         listar_obras,
         resumo_obra,
@@ -1384,4 +1452,5 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         _com_chamada(propor_entrega),
         _com_chamada(propor_avanco_pedido),
         _com_chamada(propor_ajuste_estoque),
+        _com_chamada(propor_cronograma),
     ]

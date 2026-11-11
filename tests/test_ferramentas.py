@@ -408,3 +408,27 @@ async def test_tributos_sem_dados_nao_inventa_valor(monkeypatch):
         t = json.loads(await fs["consultar_tributos"].call({"obra_id": OBRA}))
     assert "valor_estimado" not in t["inss"] and t["inss"]["motivos"]
     assert (t["ibs_cbs"]["a_pagar"], t["ibs_cbs"]["aliquota_efetiva"]) == ("R$ 36.250,00", "13,25%")
+
+
+async def test_propor_cronograma_sequencia_etapas_e_calcula_os_percentuais(ferramentas):
+    fs, api = ferramentas
+    await fs["propor_cronograma"].func(
+        obra_id=EMEI, inicio="2026-01",
+        etapas=[{"etapa": "1", "mes_inicio": 1, "meses": 2}, {"etapa": "2", "mes_inicio": 2, "meses": 2}],
+        justificativa="fundação, depois estrutura")
+    [corpo] = [c.corpo for c in api.feitas("POST", "/propostas")]
+    assert corpo["tipo"] == "cronograma"
+    assert corpo["dados"]["inicio"] == "2026-01"
+    assert corpo["dados"]["meses"] == 3  # a etapa 2 vai até o 3º mês
+    assert corpo["dados"]["etapas"] == [
+        {"etapa": "1", "percentuais": [5000, 5000, 0]},
+        {"etapa": "2", "percentuais": [0, 5000, 5000]},
+    ]
+    assert corpo["conta"] == "2 etapas · 3 meses"
+
+    with pytest.raises(ToolError, match="mes_inicio"):
+        await fs["propor_cronograma"].func(obra_id=EMEI, inicio="2026-01",
+                                           etapas=[{"etapa": "1", "mes_inicio": 0, "meses": 1}], justificativa="x")
+    with pytest.raises(ToolError, match="Início inválido"):
+        await fs["propor_cronograma"].func(obra_id=EMEI, inicio="xx",
+                                           etapas=[{"etapa": "1", "mes_inicio": 1, "meses": 1}], justificativa="x")
