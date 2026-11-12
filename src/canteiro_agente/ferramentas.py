@@ -13,12 +13,13 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
 from anthropic import beta_async_tool
 from anthropic.lib.tools import ToolError
 
+from canteiro_dominio.cronograma import EtapaParaPlano, ServicoDoPlano, montar_cronograma_de_etapas
 from canteiro_dominio.modelos import StatusPedido
 from canteiro_dominio.regras import RegraViolada, validar_transicao
 from canteiro_dominio.tipos import fmt_qtd, fmt_reais, qtd, reais
@@ -103,21 +104,12 @@ class LinhaEntregue(TypedDict):
 
 
 class EtapaDoCronograma(TypedDict):
-    """Uma etapa do orçamento na sequência da obra: onde começa e quanto dura."""
+    """Decisão de planejamento de uma etapa do orçamento: a equipe alocada e de que etapas ela depende. A DURAÇÃO não
+    entra aqui — o sistema calcula pelos serviços da etapa (quantidade × produtividade). O planejador decide equipe e
+    sequência; a conta é do domínio."""
     etapa: str
-    mes_inicio: int
-    meses: int
-
-
-def _grade_cronograma(de: int, ate: int, meses: int) -> list[int]:
-    """O % de uma etapa distribuído igualmente entre os meses [de, ate] (0-based), somando 10000 (100%). O sistema faz
-    a conta; o modelo só decide a sequência e a duração."""
-    n = ate - de + 1
-    base, resto = divmod(10000, n)
-    fora = [0] * meses
-    for i in range(de, ate + 1):
-        fora[i] = base + (1 if (i - de) < resto else 0)
-    return fora
+    equipe: int
+    depende_de: NotRequired[list[str]]
 
 
 @dataclass
@@ -1390,50 +1382,77 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
 
     @beta_async_tool(eager_input_streaming=True)
     async def propor_cronograma(obra_id: str, inicio: str, etapas: list[EtapaDoCronograma], justificativa: str) -> str:
-        """Propõe o cronograma físico-financeiro da obra. NÃO grava: cria uma proposta que uma pessoa aprova na tela.
+        """Propõe o cronograma físico-financeiro da obra por VISÃO DE OBRA. NÃO grava: cria uma proposta que uma pessoa
+        aprova na tela.
 
-        Use quando a pessoa pedir para montar/gerar o cronograma e a obra já tiver orçamento (as etapas vêm dele, por
-        consultar_orcamento). VOCÊ decide a sequência e a duração de cada etapa pela lógica de obra (fundação antes de
-        estrutura antes de acabamento, com a sobreposição que fizer sentido); a conta — o % de cada etapa por mês — é
-        feita pelo sistema, não por você. Toda etapa do orçamento deve entrar uma vez. Aprovada, a proposta grava o
-        cronograma, e quem aprova pode desfazer.
+        Use quando a pessoa pedir para montar/gerar o cronograma e a obra já tiver orçamento (veja as etapas por
+        consultar_orcamento). VOCÊ, como mestre de obras, decide só a EQUIPE de cada etapa e a SEQUÊNCIA (o que depende
+        do quê, o que corre em paralelo). A DURAÇÃO de cada etapa NÃO é sua: o sistema calcula pela quantidade de cada
+        serviço × produtividade (homem-hora) ÷ equipe, e já respeita a cura do concreto entre as fases. Inclua todas as
+        etapas do orçamento. Aprovada, a proposta grava o cronograma, e quem aprova pode desfazer.
 
         Args:
             obra_id: ID da obra.
             inicio: Mês de início da obra, "AAAA-MM" ou "mm/aaaa".
-            etapas: A sequência das etapas, cada uma com: etapa (a chave do orçamento, ex.: "1", de
-                consultar_orcamento), mes_inicio (em que mês da obra ela começa; 1 = o primeiro mês) e meses (quantos
-                meses dura). As etapas podem se sobrepor.
-            justificativa: Uma frase com o critério (ex.: "fundação → estrutura → acabamento, duração pelo porte").
+            etapas: As etapas do orçamento, cada uma com: etapa (a chave, ex.: "1", de consultar_orcamento), equipe
+                (quantas pessoas na frente dessa etapa) e depende_de (lista das chaves de etapas que precisam terminar
+                antes — deixe vazio para começar junto do início; a cura entra sozinha). Inclua todas as etapas.
+            justificativa: Uma frase com o critério (ex.: "fundação → estrutura (após cura) → alvenaria; acabamento em
+                paralelo onde dá").
         """
         eventos.ferramenta("propor_cronograma", "preparou uma proposta de cronograma")
         if not etapas:
-            raise ToolError("Diga as etapas com mes_inicio e meses (a sequência da obra).")
+            raise ToolError("Diga as etapas com a equipe e as dependências (a sequência da obra).")
         inicio_iso = _mes_iso(inicio)
         if not inicio_iso:
             raise ToolError("Início inválido: use AAAA-MM (ex.: 2026-01).")
-        plano = []
-        for e in etapas:
-            try:
-                mi, dur = int(e["mes_inicio"]), int(e["meses"])
-            except (KeyError, TypeError, ValueError):
-                raise ToolError("Cada etapa precisa de etapa, mes_inicio e meses — inteiros ≥ 1.") from None
-            if mi < 1 or dur < 1:
-                raise ToolError("Cada etapa precisa de mes_inicio ≥ 1 e meses ≥ 1.")
-            plano.append((str(e["etapa"]), mi - 1, mi - 1 + dur - 1))
-        meses = max(ate for _, _, ate in plano) + 1
-        if meses > 60:
-            raise ToolError("O cronograma passa de 60 meses; reduza as durações.")
-        dados_etapas = [{"etapa": et, "percentuais": _grade_cronograma(de, ate, meses)} for et, de, ate in plano]
-        n = len(plano)
+        try:
+            orc = await api.orcamento(obra_id)
+        except ErroApi as e:
+            raise _erro(e) from None
+        # serviços por etapa, do orçamento (a conta é sobre a quantidade real; o modelo nunca manda quantidade)
+        itens_por_etapa: dict[str, list[ServicoDoPlano]] = {}
+        for x in orc.get("itens", []):
+            if x.get("tipo") != "item" or not x.get("etapa"):
+                continue
+            chave = str(x["etapa"])
+            itens_por_etapa.setdefault(chave, []).append(ServicoDoPlano(
+                id=f"{chave}:{len(itens_por_etapa.get(chave, []))}", descricao=x.get("descricao", ""),
+                quantidade_milesimos=int(x.get("quantidade") or 0), unidade=x.get("unidade", ""),
+                codigo=str(x.get("codigo") or "")))
+        ordem_orcamento = [str(e["etapa"]) for e in orc.get("etapas", []) if str(e["etapa"]) in itens_por_etapa]
+        if not ordem_orcamento:
+            raise ToolError("O orçamento não tem serviços com etapa; não dá para montar o cronograma.")
+        decisao = {str(e["etapa"]): e for e in etapas}
+        planejadas: list[EtapaParaPlano] = []
+        anterior: str | None = None
+        for chave in ordem_orcamento:  # toda etapa do orçamento entra, na ordem dele
+            d = decisao.get(chave)
+            equipe = int(d["equipe"]) if d and d.get("equipe") else 4
+            if d and "depende_de" in d:
+                dep = [str(x) for x in (d.get("depende_de") or []) if str(x) in itens_por_etapa]
+            else:  # sem decisão: encadeia na etapa anterior (sequência natural de obra)
+                dep = [anterior] if anterior else []
+            planejadas.append(EtapaParaPlano(id=chave, itens=itens_por_etapa[chave], equipe=max(1, equipe),
+                                             depende_de=dep))
+            anterior = chave
+        inicio_data = date(int(inicio_iso[:4]), int(inicio_iso[5:7]), 1)
+        cr = montar_cronograma_de_etapas(planejadas, inicio_data)
+        if cr.meses > 60:
+            raise ToolError("O cronograma passa de 60 meses; reforce as equipes ou revise as dependências.")
+        por_chave = {e.id: e for e in cr.etapas}
+        dados_etapas = [{"etapa": chave, "percentuais": por_chave[chave].percentuais} for chave in ordem_orcamento]
+        n = len(dados_etapas)
+        semanas = round(cr.dias_uteis / 5)
         corpo = {
             "tipo": "cronograma",
             "obra_id": obra_id,
             "titulo": "Cronograma da obra",
-            "conta": f"{n} {'etapa' if n == 1 else 'etapas'} · {meses} {'mes' if meses == 1 else 'meses'}",
+            "conta": f"{n} {'etapa' if n == 1 else 'etapas'} · {cr.meses} {'mes' if cr.meses == 1 else 'meses'} "
+                     f"· {semanas} {'semana' if semanas == 1 else 'semanas'} de obra",
             "justificativa": justificativa,
-            "fonte": "orçamento da obra (etapas e valores)",
-            "dados": {"inicio": inicio_iso, "meses": meses, "etapas": dados_etapas},
+            "fonte": "orçamento da obra (quantidades × produtividade, com dependências e cura)",
+            "dados": {"inicio": inicio_iso, "meses": cr.meses, "etapas": dados_etapas},
         }
         return await _propor(corpo)
 

@@ -40,8 +40,8 @@ ENTRADAS: dict[str, dict] = {
                        "justificativa": "chegou o resto", "nf_numero": "4410", "nf_valor": "910,00"},
     "propor_ajuste_estoque": {"obra_id": OBRA, "insumo_id": ACO, "quantidade": "-190", "motivo": "quebra"},
     "propor_cronograma": {"obra_id": OBRA_EMEI, "inicio": "2026-01",
-                          "etapas": [{"etapa": "1", "mes_inicio": 1, "meses": 2}],
-                          "justificativa": "fundação, depois estrutura, depois acabamento"},
+                          "etapas": [{"etapa": "1", "equipe": 4}],
+                          "justificativa": "serviços preliminares, depois fundação"},
 }
 
 

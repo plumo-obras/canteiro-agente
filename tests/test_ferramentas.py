@@ -410,25 +410,27 @@ async def test_tributos_sem_dados_nao_inventa_valor(monkeypatch):
     assert (t["ibs_cbs"]["a_pagar"], t["ibs_cbs"]["aliquota_efetiva"]) == ("R$ 36.250,00", "13,25%")
 
 
-async def test_propor_cronograma_sequencia_etapas_e_calcula_os_percentuais(ferramentas):
+async def test_propor_cronograma_usa_a_produtividade_do_orcamento(ferramentas):
+    # a duração vem da quantidade × produtividade dos serviços da etapa (o modelo só dá equipe e dependências), e o
+    # corpo gravado continua etapa × mês (%). O orçamento dublado só tem serviços na etapa "1".
     fs, api = ferramentas
     await fs["propor_cronograma"].func(
         obra_id=EMEI, inicio="2026-01",
-        etapas=[{"etapa": "1", "mes_inicio": 1, "meses": 2}, {"etapa": "2", "mes_inicio": 2, "meses": 2}],
-        justificativa="fundação, depois estrutura")
+        etapas=[{"etapa": "1", "equipe": 4}],
+        justificativa="serviços preliminares primeiro")
     [corpo] = [c.corpo for c in api.feitas("POST", "/propostas")]
     assert corpo["tipo"] == "cronograma"
     assert corpo["dados"]["inicio"] == "2026-01"
-    assert corpo["dados"]["meses"] == 3  # a etapa 2 vai até o 3º mês
-    assert corpo["dados"]["etapas"] == [
-        {"etapa": "1", "percentuais": [5000, 5000, 0]},
-        {"etapa": "2", "percentuais": [0, 5000, 5000]},
-    ]
-    assert corpo["conta"] == "2 etapas · 3 meses"
+    assert corpo["dados"]["meses"] >= 1
+    etapas = corpo["dados"]["etapas"]
+    assert [e["etapa"] for e in etapas] == ["1"]  # a única etapa do orçamento com serviços
+    for e in etapas:
+        assert sum(e["percentuais"]) == 10000
+        assert len(e["percentuais"]) == corpo["dados"]["meses"]
+    assert "produtividade" in corpo["fonte"]  # ancorado em obra, não em preço
 
-    with pytest.raises(ToolError, match="mes_inicio"):
-        await fs["propor_cronograma"].func(obra_id=EMEI, inicio="2026-01",
-                                           etapas=[{"etapa": "1", "mes_inicio": 0, "meses": 1}], justificativa="x")
     with pytest.raises(ToolError, match="Início inválido"):
         await fs["propor_cronograma"].func(obra_id=EMEI, inicio="xx",
-                                           etapas=[{"etapa": "1", "mes_inicio": 1, "meses": 1}], justificativa="x")
+                                           etapas=[{"etapa": "1", "equipe": 4}], justificativa="x")
+    with pytest.raises(ToolError):
+        await fs["propor_cronograma"].func(obra_id=EMEI, inicio="2026-01", etapas=[], justificativa="x")
