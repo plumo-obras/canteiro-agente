@@ -1422,7 +1422,9 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
                 id=f"{chave}:{len(itens_por_etapa.get(chave, []))}", descricao=x.get("descricao", ""),
                 quantidade_milesimos=int(x.get("quantidade") or 0), unidade=x.get("unidade", ""),
                 codigo=str(x.get("codigo") or "")))
-        ordem_orcamento = [str(e["etapa"]) for e in orc.get("etapas", []) if str(e["etapa"]) in itens_por_etapa]
+        # na ordem de obra: a chave da etapa é numérica ("1 Fundação", "2 Estrutura"...), então ordena por número
+        ordem_orcamento = sorted((str(e["etapa"]) for e in orc.get("etapas", []) if str(e["etapa"]) in itens_por_etapa),
+                                 key=lambda k: int(k) if k.isdigit() else 999)
         if not ordem_orcamento:
             raise ToolError("O orçamento não tem serviços com etapa; não dá para montar o cronograma.")
         decisao = {str(e["etapa"]): e for e in etapas}
