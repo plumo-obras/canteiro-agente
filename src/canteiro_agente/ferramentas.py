@@ -1389,7 +1389,9 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
         consultar_orcamento). VOCÊ, como mestre de obras, decide só a EQUIPE de cada etapa e a SEQUÊNCIA (o que depende
         do quê, o que corre em paralelo). A DURAÇÃO de cada etapa NÃO é sua: o sistema calcula pela quantidade de cada
         serviço × produtividade (homem-hora) ÷ equipe, e já respeita a cura do concreto entre as fases. Inclua todas as
-        etapas do orçamento. Aprovada, a proposta grava o cronograma, e quem aprova pode desfazer.
+        etapas do orçamento. SEMPRE proponha com as etapas que existirem — mesmo que seja uma só; não peça para a pessoa
+        cadastrar mais etapas antes de propor (ela ajusta o orçamento e regenera depois, se quiser). Aprovada, a
+        proposta grava o cronograma, e quem aprova pode desfazer.
 
         Args:
             obra_id: ID da obra.
