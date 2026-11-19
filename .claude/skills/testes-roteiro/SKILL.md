@@ -26,10 +26,10 @@ Ponta a ponta (conversa com ferramenta):
 
 ```python
 amb = ambiente([
-    Resposta([ferramenta("consultar_estoque", {"obra_id": OBRA, "busca": "cimento"})], stop_reason="tool_use"),
-    Resposta([texto("Falta **34 sc** de cimento.")]),
+    Resposta([ferramenta("consultar_orcamento", {"obra_id": OBRA, "busca": "fundações"})], stop_reason="tool_use"),
+    Resposta([texto("As fundações gastaram **R$ 118.000,00**.")]),
 ])
-eventos = await amb.conversar("quanto falta de cimento?", obra_id=OBRA)
+eventos = await amb.conversar("quanto já gastei nas fundações?", obra_id=OBRA)
 ```
 
 Confira eventos (`ferramenta`, `proposta`, `fim`, `erro`), o que foi à API (`amb.api.feitas(...)`, cabeçalho

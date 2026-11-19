@@ -25,14 +25,13 @@ duplicada ou escrita sem aprovação.
 - `except ErroApi as e: raise _erro(e) from None`: o modelo recebe frase, nunca a exceção crua.
 - Saída com bruto **e** formatado (`fmt_qtd`, `fmt_reais`, `fmt_data`, `fmt_mes`) e, quando houver, a linha de conta
   pronta (`linha_de_conta`). Datas para gente ("16/11/2026"), nunca ISO.
-- Falta de cadastro ou de previsão vai como lembrete com chave estável: `eventos.com_lembretes(saida, {"chave:obra": TEXTO})`.
+- Falta de cadastro (orçamento, cronograma) vai como lembrete com chave estável: `eventos.com_lembretes(saida, {"chave:obra": TEXTO})`.
 
 ## Proposta
 
 - Nome `propor_*`, nível `"propoe"` em `NIVEIS`.
-- Valide tudo antes de propor: `_ler_qtd`, `_ler_reais`, `_data_iso(texto, eventos.hoje)`, existência do insumo/pedido
-  (`_item_do_insumo`, `_pedido_da_obra`), transição pelo domínio (`validar_transicao`). Faltou dado: `ToolError` com a
-  pergunta a fazer ("Falta o valor: pergunte o total...").
+- Valide tudo antes de propor (etapas do orçamento, meses, percentuais; a API revalida). Faltou dado: `ToolError` com
+  a pergunta a fazer.
 - Termine com `return await _propor({...}, extra)`: ele põe `chave_idempotencia = "{sessao_id}:{tool_use_id}"`, emite
   o evento `proposta` e devolve o aviso de "aguardando aprovação" ou de `ja_existia`.
 - O corpo descreve o efeito para quem aprova: `titulo` legível ("Comprar 34 sc de Cimento CP-II de Votorantim por
