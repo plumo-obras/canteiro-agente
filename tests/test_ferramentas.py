@@ -34,7 +34,7 @@ async def test_orcamento_traz_aditivo_e_andamento_prontos(ferramentas):
                                     "valor": "R$ 59.831,80", "itens": 5}]
     assert (o["gasto"], o["falta_gastar"]) == ("R$ 118.300,00", "R$ 1.976.533,38")
     fund = next(e for e in o["etapas"] if e["etapa"] == "3")
-    # o gasto e o que falta gastar vêm da API (realizado e saldo); estourada, o que falta fica negativo
+    # o gasto e o que falta gastar vêm da API (gasto e saldo); estourada, o que falta fica negativo
     assert (fund["gasto"], fund["falta_gastar"], fund["estourou"]) == ("R$ 118.000,00", "-R$ 1.753,18", True)
     assert not {"comprometido", "realizado", "em_cotacao", "saldo"} & set(fund)
     assert not {"comprometido", "realizado", "em_cotacao", "saldo_a_comprometer"} & set(o)

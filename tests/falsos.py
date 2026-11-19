@@ -223,10 +223,10 @@ async def _corpo(partes: list[str | float]):
 
 
 OBRA_EMEI = "obra-emei"
-# saldo, estourou e aditivos_pct como a API calcula (servicos/versoes.py): o agente só os formata. Sem pedido, o
-# comprometido e o realizado são o mesmo gasto (os comprovantes confirmados) e o cotando é 0.
+# saldo, estourou e aditivos_pct como a API calcula (servicos/versoes.py): o agente só os formata. O gasto são os
+# comprovantes confirmados.
 _ETAPA = lambda e, d, c, a, gasto: {"etapa": e, "descricao": d, "contratado": c, "aditivos": a,  # noqa: E731
-                                    "atual": c + a, "cotando": 0, "comprometido": gasto, "realizado": gasto,
+                                    "atual": c + a, "gasto": gasto,
                                     "saldo": c + a - gasto, "estourou": gasto > c + a}
 ORCAMENTO_EMEI = {
     "versoes": [
@@ -244,9 +244,9 @@ ORCAMENTO_EMEI = {
     "etapas": [_ETAPA("1", "SERVIÇOS PRELIMINARES", 6117367, 2035614, 0),
                _ETAPA("3", "FUNDAÇÕES", 10588514, 1036168, 11_800_000)],
     "totais": {"contratado": 203500158, "aditivos": 5983180, "atual": 209483338, "n_itens": 496, "n_etapas": 24,
-               "cotando": 0, "comprometido": 11_830_000, "realizado": 11_830_000, "saldo": 209483338 - 11_830_000,
+               "gasto": 11_830_000, "saldo": 209483338 - 11_830_000,
                "aditivos_pct": 294,
-               "sem_etapa": {"cotando": 0, "comprometido": 0, "realizado": 0},
+               "sem_etapa": {"gasto": 0},
                # os gastos por comprovante, como a API repartiu: já somados no gasto dos totais
                "gastos": {"total": 11_830_000, "nas_etapas": 11_800_000, "fora_do_orcamento": 30_000,
                           "na_lista_padrao": 0, "sem_etapa_do_orcamento": 0}},
@@ -319,7 +319,7 @@ RESUMO_EMEI = {
                               "previsto_ate_referencia": 10000, "atraso_pct": 1114}],
     },
     "financeiro": {"tem_orcamento": True, "contratado": 203500158, "aditivos": 5983180, "aditivos_pct": 294,
-                   "orcado_atual": 209483338, "cotando": 0, "comprometido": 11_830_000, "realizado": 11_830_000,
+                   "orcado_atual": 209483338, "gasto": 11_830_000,
                    "saldo": 209483338 - 11_830_000,
                    "etapas_estouradas": [{"etapa": "3", "descricao": "FUNDAÇÕES", "saldo": -175_318}]},
     "pendencias": {"propostas": 1, "titulos": ["Cronograma da obra: 24 etapas em 11 meses"]},
@@ -331,7 +331,7 @@ RESUMO_VILA = {
     "cronograma": {"cadastrado": False, "mes_corrente": "2026-11", "termino_contratual": None,
                    "etapas_do_mes": [], "proximas_etapas": [], "etapas_atrasadas": []},
     "financeiro": {"tem_orcamento": False, "contratado": 0, "aditivos": 0, "aditivos_pct": None,
-                   "orcado_atual": 0, "cotando": 0, "comprometido": 0, "realizado": 0, "saldo": 0,
+                   "orcado_atual": 0, "gasto": 0, "saldo": 0,
                    "etapas_estouradas": []},
     "pendencias": {"propostas": 0, "titulos": []},
 }
