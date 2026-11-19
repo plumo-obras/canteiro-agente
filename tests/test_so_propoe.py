@@ -15,7 +15,7 @@ from canteiro_agente import ferramentas as mod_ferramentas
 from canteiro_agente.api_central import ApiCentral
 from canteiro_agente.ferramentas import LOCAIS, NIVEIS, Eventos, criar_ferramentas
 
-from falsos import ACO, BLOCO, CIMENTO, OBRA, OBRA_EMEI, PED_ACO, PED_BRITA, TOKEN_USUARIO, ApiFalsa
+from falsos import OBRA, OBRA_EMEI, TOKEN_USUARIO, ApiFalsa
 
 ESCRITA_PERMITIDA = {("POST", "/propostas")}
 
@@ -24,21 +24,10 @@ ESCRITA_PERMITIDA = {("POST", "/propostas")}
 ENTRADAS: dict[str, dict] = {
     "listar_obras": {},
     "resumo_obra": {"obra_id": OBRA_EMEI},
-    "consultar_estoque": {"obra_id": OBRA, "busca": "aço"},
-    "historico_movimentos": {"obra_id": OBRA, "insumo_id": BLOCO},
-    "listar_pedidos": {"obra_id": OBRA},
     "consultar_orcamento": {"obra_id": OBRA_EMEI},
     "consultar_cronograma": {"obra_id": OBRA_EMEI},
-    "listar_fornecedores": {},
     "consultar_tributos": {"obra_id": OBRA},
     "calcular": {"expressao": "7 [m³] × 130 [R$/m³]", "unidade_resultado": "R$"},
-    "propor_pedido": {"obra_id": OBRA, "insumo_id": CIMENTO, "quantidade": "34", "fornecedor": "Votorantim",
-                      "valor": "1292", "justificativa": "repor a falta"},
-    "propor_avanco_pedido": {"obra_id": OBRA, "pedido_id": PED_ACO, "para": "recebido",
-                             "justificativa": "o caminhão chegou"},
-    "propor_entrega": {"obra_id": OBRA_EMEI, "pedido_id": PED_BRITA, "linhas": [{"indice": 0, "quantidade": "7"}],
-                       "justificativa": "chegou o resto", "nf_numero": "4410", "nf_valor": "910,00"},
-    "propor_ajuste_estoque": {"obra_id": OBRA, "insumo_id": ACO, "quantidade": "-190", "motivo": "quebra"},
     "propor_cronograma": {"obra_id": OBRA_EMEI, "inicio": "2026-01",
                           "etapas": [{"etapa": "1", "equipe": 4}],
                           "justificativa": "serviços preliminares, depois fundação"},

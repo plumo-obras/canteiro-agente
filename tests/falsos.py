@@ -29,11 +29,6 @@ TOKEN_OUTRO = f"Bearer {_b64({'alg': 'HS256'})}.{_b64({'sub': 'u2', 'tid': 't1',
 USUARIOS = {TOKEN_USUARIO: "u1", TOKEN_OUTRO: "u2"}
 TOKEN_SERVICO = "token-de-servico"
 OBRA = "obra-vila-nova"
-ACO = "insumo-aco"
-CIMENTO = "insumo-cimento"
-BLOCO = "insumo-bloco"
-PED_ACO = "pedido-0158"
-PED_CIMENTO = "pedido-0160"
 
 
 @dataclass
@@ -58,53 +53,6 @@ class ApiFalsa:
     # Simula a API caída: a partir de `fora_do_ar_depois` requisições de dado (fora /creditos e /sessoes), o
     # transporte falha como um ConnectError (None = nunca).
     fora_do_ar_depois: int | None = None
-
-    def _insumos(self) -> list[dict[str, Any]]:
-        # `texto` é o que a API monta com regras.texto_da_conta (aqui escrito à mão: o dublê não faz conta)
-        def conta(precisa, saldo, a_caminho, cotando, falta, texto):
-            return {"precisa": precisa, "saldo": saldo, "a_caminho": a_caminho, "cotando": cotando,
-                    "transferencia": 0, "falta": falta, "comprar": falta, "sobra": 0, "sem_previsao": False,
-                    "texto": texto}
-        return [
-            {"insumo": {"id": ACO, "tenant_id": "t1", "obra_id": OBRA, "nome": "Aço CA-50", "unidade": "kg",
-                        "curva": "A", "precisa_ate_o_fim": 3_940_000},
-             "conta": conta(3_940_000, 140_000, 3_200_000, 600_000, 0,
-                            "precisa 3.940 kg − saldo 140 kg − a caminho 3.200 kg − em cotação 600 kg − "
-                            "transferência 0 kg = falta 0 kg"),
-             "ultimo_preco": None},
-            {"insumo": {"id": CIMENTO, "tenant_id": "t1", "obra_id": OBRA, "nome": "Cimento CP-II", "unidade": "sc",
-                        "curva": "A", "precisa_ate_o_fim": 200_000},
-             "conta": conta(200_000, 46_000, 120_000, 0, 34_000,
-                            "precisa 200 sc − saldo 46 sc − a caminho 120 sc − em cotação 0 sc − transferência 0 sc"
-                            " = falta 34 sc"),
-             "ultimo_preco": {"valor_unitario": 3800, "pedido_id": PED_CIMENTO, "numero": "PED-0160",
-                              "fornecedor": "Depósito São Jorge", "data": "2026-10-20", "status": "recebido"}},
-            {"insumo": {"id": BLOCO, "tenant_id": "t1", "obra_id": OBRA, "nome": "Bloco cerâmico 14x19x29",
-                        "unidade": "un", "curva": "A", "precisa_ate_o_fim": 4_800_000},
-             "conta": conta(4_800_000, 2_760_000, 0, 0, 2_040_000,
-                            "precisa 4.800 un − saldo 2.760 un − a caminho 0 un − em cotação 0 un − transferência "
-                            "0 un = falta 2.040 un"),
-             "ultimo_preco": None},
-        ]
-
-    def _movimentos(self) -> list[dict[str, Any]]:
-        m = lambda tipo, q, destino=None, doc=None: {"tipo": tipo, "quantidade": q, "destino": destino,  # noqa: E731
-                                                     "origem_doc": doc, "quem": "Joana (mestre)", "origem": "tela"}
-        return [m("saida", 190_000, "Quebra no descarregamento"), m("saida", 1_050_000, "Alvenaria do térreo"),
-                m("entrada", 4_000_000, doc="NF 4471")]
-
-    def _pedidos(self) -> list[dict[str, Any]]:
-        def linha(insumo, nome, un, q, total, recebida=0):
-            # falta_entregar: a conta da API (regras.falta_na_linha), que o agente só formata
-            return {"insumo_id": insumo, "nome": nome, "unidade": un, "tipo": "material", "etapa": None,
-                    "quantidade": q, "valor_unitario": 0, "total": total, "recebida": recebida,
-                    "falta_entregar": max(0, q - recebida)}
-        return [{"id": PED_ACO, "numero": "PED-0158", "obra_id": OBRA, "fornecedor": "Gerdau", "valor": 2_048_000,
-                 "status": "em_transito", "previsao": "2026-11-03", "recebimentos": 0,
-                 "linhas": [linha(ACO, "Aço CA-50", "kg", 3_200_000, 2_048_000)]},
-                {"id": PED_CIMENTO, "numero": "PED-0160", "obra_id": OBRA, "fornecedor": "Depósito São Jorge",
-                 "valor": 456_000, "status": "recebido", "previsao": "2026-11-01", "recebimentos": 0,
-                 "linhas": [linha(CIMENTO, "Cimento CP-II", "sc", 120_000, 456_000)]}]
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         corpo = json.loads(req.content) if req.content else None
@@ -135,38 +83,16 @@ class ApiFalsa:
         if caminho == "/obras":
             return httpx.Response(200, json=[{"id": OBRA, "nome": "Casa Vila Nova", "cidade": "Campinas",
                                               "status": "em_andamento", "verba": 48_000_000}])
-        if caminho == f"/obras/{OBRA}/insumos":
-            return httpx.Response(200, json=self._insumos())
-        if caminho == f"/obras/{OBRA}/insumos/{BLOCO}/movimentos":
-            return httpx.Response(200, json=self._movimentos()[: int(req.url.params.get("limite", 50))])
-        if caminho == f"/obras/{OBRA}/pedidos":
-            status = req.url.params.get_list("status")
-            return httpx.Response(200, json=[p for p in self._pedidos() if not status or p["status"] in status])
         if caminho == f"/obras/{OBRA_EMEI}/orcamento":
             return httpx.Response(200, json=ORCAMENTO_EMEI)
         if caminho == f"/obras/{OBRA_EMEI}/cronograma":
             return httpx.Response(200, json=CRONOGRAMA_EMEI)
-        if caminho == f"/obras/{OBRA_EMEI}/etapas":
-            return httpx.Response(200, json=[{"etapa": "1", "descricao": "SERVIÇOS PRELIMINARES"},
-                                             {"etapa": "3", "descricao": "FUNDAÇÕES"}])
-        if caminho == f"/obras/{OBRA_EMEI}/insumos":
-            return httpx.Response(200, json=INSUMOS_EMEI)
-        if caminho == f"/obras/{OBRA_EMEI}/pedidos":
-            status = req.url.params.get_list("status")
-            return httpx.Response(200, json=[p for p in PEDIDOS_EMEI if not status or p["status"] in status])
-        if caminho == f"/obras/{OBRA_EMEI}/movimentos" and m == "GET":
-            return httpx.Response(200, json=MOVIMENTOS_EMEI[: int(req.url.params.get("limite", 50))])
         if caminho == f"/obras/{OBRA_EMEI}/resumo":
             return httpx.Response(200, json=RESUMO_EMEI)
         if caminho == f"/obras/{OBRA}/resumo":
             return httpx.Response(200, json=RESUMO_VILA)
         if caminho == f"/obras/{OBRA}/tributos":
             return httpx.Response(200, json=TRIBUTOS_VILA)
-        if caminho == "/fornecedores":
-            return httpx.Response(200, json=[{"id": "f1", "nome": "Depósito São Jorge", "cnpj": "11222333000181",
-                                              "contato": "Jorge", "telefone": "51 9999", "email": ""}])
-        if caminho == f"/obras/{OBRA}/etapas":
-            return httpx.Response(200, json=[])          # a Vila Nova da demonstração não tem orçamento em etapas
         if caminho == "/propostas" and m == "POST":
             return self._propor(corpo)
         if caminho == "/propostas" and m == "GET":
@@ -297,10 +223,11 @@ async def _corpo(partes: list[str | float]):
 
 
 OBRA_EMEI = "obra-emei"
-# saldo, estourou e aditivos_pct como a API calcula (servicos/versoes.py): o agente só os formata
-_ETAPA = lambda e, d, c, a, cot, comp, real: {"etapa": e, "descricao": d, "contratado": c, "aditivos": a,  # noqa: E731
-                                             "atual": c + a, "cotando": cot, "comprometido": comp, "realizado": real,
-                                             "saldo": c + a - comp, "estourou": comp > c + a}
+# saldo, estourou e aditivos_pct como a API calcula (servicos/versoes.py): o agente só os formata. Sem pedido, o
+# comprometido e o realizado são o mesmo gasto (os comprovantes confirmados) e o cotando é 0.
+_ETAPA = lambda e, d, c, a, gasto: {"etapa": e, "descricao": d, "contratado": c, "aditivos": a,  # noqa: E731
+                                    "atual": c + a, "cotando": 0, "comprometido": gasto, "realizado": gasto,
+                                    "saldo": c + a - gasto, "estourou": gasto > c + a}
 ORCAMENTO_EMEI = {
     "versoes": [
         {"id": "v-adit", "tipo": "aditivo", "ativa": True, "numero": 1, "descricao": "Aterro, tapume e aço",
@@ -314,17 +241,16 @@ ORCAMENTO_EMEI = {
               {"tipo": "item", "numero": "A1.2", "etapa": "1", "codigo": "74220/1", "fonte": "SINAPI",
                "descricao": "Tapume de chapa de madeira", "quantidade": 348000, "unidade": "m²",
                "valor_unitario": 4523, "total": 1574004, "versao_id": "v-adit"}],
-    "etapas": [_ETAPA("1", "SERVIÇOS PRELIMINARES", 6117367, 2035614, 0, 0, 0),
-               _ETAPA("3", "FUNDAÇÕES", 10588514, 1036168, 0, 2425000, 2334000)],
+    "etapas": [_ETAPA("1", "SERVIÇOS PRELIMINARES", 6117367, 2035614, 0),
+               _ETAPA("3", "FUNDAÇÕES", 10588514, 1036168, 11_800_000)],
     "totais": {"contratado": 203500158, "aditivos": 5983180, "atual": 209483338, "n_itens": 496, "n_etapas": 24,
-               "cotando": 0, "comprometido": 2425000, "realizado": 2334000, "saldo": 209483338 - 2425000,
+               "cotando": 0, "comprometido": 11_830_000, "realizado": 11_830_000, "saldo": 209483338 - 11_830_000,
                "aditivos_pct": 294,
                "sem_etapa": {"cotando": 0, "comprometido": 0, "realizado": 0},
-               # gastos por comprovante (sem pedido): a API já somou no comprometido e no realizado
-               "gastos": {"total": 180000, "nas_etapas": 150000, "fora_do_orcamento": 30000, "na_lista_padrao": 0,
-                          "sem_etapa_do_orcamento": 0}},
+               # os gastos por comprovante, como a API repartiu: já somados no gasto dos totais
+               "gastos": {"total": 11_830_000, "nas_etapas": 11_800_000, "fora_do_orcamento": 30_000,
+                          "na_lista_padrao": 0, "sem_etapa_do_orcamento": 0}},
 }
-ORCAMENTO_EMEI["etapas"][1]["gastos_avulsos"] = 150000
 CRONOGRAMA_EMEI = {
     "inicio": "2026-11", "meses": 11, "base": {"inicio": "2026-11", "meses": 10}, "revisoes": 1,
     # como a API devolve (regras.situacao_etapa): 1 atrasada, 2 adiantada, 4 começa em dezembro
@@ -353,68 +279,6 @@ CRONOGRAMA_EMEI = {
               "pct_previsto_na_medicao": 406, "pct_medido": 376, "mes_referencia": "2026-11",
               "termino_base": "2027-08", "atraso_base_meses": 1, "atraso_base_decimos": 5},
 }
-
-# --- EMEI: o almoxarifado e os pedidos do teste com o modelo real (05/11/2026) ---
-CIMENTO_EMEI, AREIA_EMEI, BRITA_EMEI = "insumo-cimento-emei", "insumo-areia-emei", "insumo-brita-emei"
-PED_BRITA = "pedido-0170"
-
-
-def _sem_previsao(saldo: int, a_caminho: int, un: str, texto_saldo: str, texto_caminho: str) -> dict:
-    return {"precisa": 0, "saldo": saldo, "a_caminho": a_caminho, "cotando": 0, "transferencia": 0, "falta": 0,
-            "comprar": 0, "sobra": 0, "sem_previsao": True,
-            "texto": f"sem previsão lançada para a obra (o sistema não sabe quanto ela precisa, então não calcula a "
-                     f"falta) · saldo {texto_saldo} {un} · a caminho {texto_caminho} {un} · em cotação 0 {un} · "
-                     f"transferência 0 {un}"}
-
-
-INSUMOS_EMEI = [
-    {"insumo": {"id": CIMENTO_EMEI, "obra_id": OBRA_EMEI, "nome": "Cimento CP-II 50 kg", "unidade": "sc",
-                "curva": "A", "precisa_ate_o_fim": 0, "valor_unitario": 0},
-     "conta": _sem_previsao(60_000, 0, "sc", "60", "0"),
-     "ultimo_preco": {"valor_unitario": 3750, "pedido_id": "pedido-0169", "numero": "PED-0169",
-                      "fornecedor": "Materiais de Construção Vale do Taquari Ltda", "data": "2026-11-03",
-                      "status": "conferido"}},
-    {"insumo": {"id": AREIA_EMEI, "obra_id": OBRA_EMEI, "nome": "Areia média", "unidade": "m³", "curva": "B",
-                "precisa_ate_o_fim": 0},
-     "conta": _sem_previsao(10_000, 0, "m³", "10", "0"), "ultimo_preco": None},
-    {"insumo": {"id": BRITA_EMEI, "obra_id": OBRA_EMEI, "nome": "Brita 1", "unidade": "m³", "curva": "B",
-                "precisa_ate_o_fim": 0},
-     "conta": _sem_previsao(18_000, 7_000, "m³", "18", "7"),
-     "ultimo_preco": {"valor_unitario": 13000, "pedido_id": PED_BRITA, "numero": "PED-0170",
-                      "fornecedor": "Pedreira Lajeado Britagem Ltda", "data": "2026-11-02", "status": "parcial"}},
-]
-
-PEDIDOS_EMEI = [
-    {"id": PED_BRITA, "numero": "PED-0170", "obra_id": OBRA_EMEI, "fornecedor": "Pedreira Lajeado Britagem Ltda",
-     "valor": 325_000, "status": "parcial", "previsao": "2026-11-16", "recebimentos": 1,
-     "criado_em": "2026-11-02T13:00:00Z",
-     "linhas": [{"insumo_id": BRITA_EMEI, "nome": "Brita 1", "unidade": "m³", "tipo": "material", "etapa": "3",
-                 "quantidade": 25_000, "valor_unitario": 13000, "total": 325_000, "recebida": 18_000,
-                 "falta_entregar": 7_000}]},
-    {"id": "pedido-0169", "numero": "PED-0169", "obra_id": OBRA_EMEI,
-     "fornecedor": "Materiais de Construção Vale do Taquari Ltda", "valor": 450_000, "status": "conferido",
-     "previsao": "2026-11-03", "recebimentos": 1, "criado_em": "2026-11-01T13:00:00Z",
-     "linhas": [{"insumo_id": CIMENTO_EMEI, "nome": "Cimento CP-II 50 kg", "unidade": "sc", "tipo": "material",
-                 "etapa": "3", "quantidade": 120_000, "valor_unitario": 3750, "total": 450_000,
-                 "recebida": 120_000, "falta_entregar": 0}]},
-]
-
-
-def _mov(insumo, tipo, q, quando, destino=None, doc=None):
-    return {"id": f"mov-{insumo}-{quando}", "obra_id": OBRA_EMEI, "insumo_id": insumo, "tipo": tipo, "quantidade": q,
-            "destino": destino, "etapa": "3", "origem_doc": doc, "quem": "Engenheiro Responsável", "origem": "tela",
-            "criado_em": quando}
-
-
-# GET /obras/{id}/movimentos: todos os insumos, mais novos primeiro (a brita é a mais nova e não apareceu no teste)
-MOVIMENTOS_EMEI = [
-    _mov(BRITA_EMEI, "entrada", 18_000, "2026-11-04T13:00:00Z", doc="PED-0170 · NF 4398"),
-    _mov(CIMENTO_EMEI, "saida", 60_000, "2026-11-03T19:44:00Z", destino="Sapatas (semana 4)"),
-    _mov(AREIA_EMEI, "saida", 20_000, "2026-11-03T19:44:00Z", destino="Sapatas (semana 4)"),
-    _mov(CIMENTO_EMEI, "entrada", 120_000, "2026-11-03T19:41:00Z", doc="PED-0169 · NF 1187"),
-    _mov(AREIA_EMEI, "entrada", 30_000, "2026-11-03T19:41:00Z", doc="PED-0169 · NF 552"),
-]
-
 
 def _obra(id_, nome, cidade, status="em_andamento"):
     return {"id": id_, "tenant_id": "t1", "nome": nome, "cidade": cidade, "status": status, "verba": 0}
@@ -455,11 +319,10 @@ RESUMO_EMEI = {
                               "previsto_ate_referencia": 10000, "atraso_pct": 1114}],
     },
     "financeiro": {"tem_orcamento": True, "contratado": 203500158, "aditivos": 5983180, "aditivos_pct": 294,
-                   "orcado_atual": 209483338, "cotando": 0, "comprometido": 2425000, "realizado": 2334000,
-                   "saldo": 207058338, "etapas_estouradas": []},
-    "entregas": {"hoje": [], "atrasadas": [], "proximos_7_dias": [], "sem_previsao": 0, "nf_para_conferir": 0},
-    "almoxarifado": {"insumos": 3, "falta_comprar": [], "sem_previsao": 3, "consumo_projetado": False},
-    "pendencias": {"propostas": 1, "titulos": ["PED-0170: encerrar sem esperar o resto"]},
+                   "orcado_atual": 209483338, "cotando": 0, "comprometido": 11_830_000, "realizado": 11_830_000,
+                   "saldo": 209483338 - 11_830_000,
+                   "etapas_estouradas": [{"etapa": "3", "descricao": "FUNDAÇÕES", "saldo": -175_318}]},
+    "pendencias": {"propostas": 1, "titulos": ["Cronograma da obra: 24 etapas em 11 meses"]},
 }
 
 RESUMO_VILA = {
@@ -470,17 +333,6 @@ RESUMO_VILA = {
     "financeiro": {"tem_orcamento": False, "contratado": 0, "aditivos": 0, "aditivos_pct": None,
                    "orcado_atual": 0, "cotando": 0, "comprometido": 0, "realizado": 0, "saldo": 0,
                    "etapas_estouradas": []},
-    "entregas": {"hoje": [], "atrasadas": [
-        {"pedido_id": PED_ACO, "numero": "PED-0158", "fornecedor": "Gerdau", "status": "em_transito",
-         "previsao": "2026-11-03", "itens": [{"nome": "Aço CA-50", "unidade": "kg", "falta_entregar": 3_200_000}]}],
-        "proximos_7_dias": [], "sem_previsao": 0, "nf_para_conferir": 1},
-    "almoxarifado": {"insumos": 3, "sem_previsao": 0, "consumo_projetado": False, "falta_comprar": [
-        {"insumo_id": CIMENTO, "nome": "Cimento CP-II", "unidade": "sc", "falta": 34_000,
-         "texto": "precisa 200 sc − saldo 46 sc − a caminho 120 sc − em cotação 0 sc − transferência 0 sc = falta "
-                  "34 sc"},
-        {"insumo_id": BLOCO, "nome": "Bloco cerâmico 14x19x29", "unidade": "un", "falta": 2_040_000,
-         "texto": "precisa 4.800 un − saldo 2.760 un − a caminho 0 un − em cotação 0 un − transferência 0 un = "
-                  "falta 2.040 un"}]},
     "pendencias": {"propostas": 0, "titulos": []},
 }
 

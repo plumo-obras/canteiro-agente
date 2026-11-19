@@ -1,8 +1,9 @@
 # canteiro-agente
 
-O agente de IA do **Plumo**, gestão de obras para engenheiros, mestres e compradores. Responde em conversa sobre a
-obra (estoque, pedidos, orçamento, cronograma), propõe compras, entregas e ajustes, e lê comprovantes de gasto. Tudo
-com os dados que a API devolve: o agente não faz conta de cabeça e **não executa nada**, só propõe.
+O agente de IA do **Plumo**, gestão de obras para engenheiros, mestres e donos de obra. Responde em conversa sobre a
+obra (orçamento, gastos, cronograma, tributos), propõe o cronograma e lê comprovantes de gasto. Não faz compras nem
+controla estoque. Tudo com os dados que a API devolve: o agente não faz conta de cabeça e **não executa nada**, só
+propõe.
 
 ## Onde ele fica
 
@@ -49,17 +50,16 @@ silêncios (proxy e função da Vercel derrubam conexão parada).
 
 ### Ferramentas (`ferramentas.py`)
 
-14 ferramentas, criadas por requisição (fecham sobre o token da conversa), mas com nome, descrição e esquema sempre
+7 ferramentas, criadas por requisição (fecham sobre o token da conversa), mas com nome, descrição e esquema sempre
 nos mesmos bytes.
 
-- **Leitura:** `listar_obras`, `resumo_obra`, `consultar_estoque`, `historico_movimentos`, `listar_pedidos`,
-  `consultar_orcamento`, `consultar_cronograma`, `listar_fornecedores`, `consultar_tributos` (INSS da aferição e
-  IBS/CBS estimados). Devolvem o número bruto e o formatado, e a linha de conta pronta para citar.
+- **Leitura:** `listar_obras`, `resumo_obra`, `consultar_orcamento`, `consultar_cronograma`, `consultar_tributos`
+  (INSS da aferição e IBS/CBS estimados). Devolvem os números já formatados como a API somou: o gasto é o dos
+  comprovantes confirmados, e "falta gastar" vem pronto (negativo = passou do orçado).
 - **Calculadora:** `calcular` (`calculo.py`). Toda conta que não veio pronta passa por ela: Decimal, árvore sintática
   restrita, sem `eval`. Devolve "7 m³ × R$ 130,00/m³ = R$ 910,00".
-- **Proposta:** `propor_pedido`, `propor_entrega`, `propor_avanco_pedido`, `propor_ajuste_estoque`. Criam
-  `POST /propostas`, que uma pessoa aprova ou recusa na web; aprovar gera entrada no registro com desfazer. Cada
-  proposta leva a chave `"{sessao_id}:{tool_use_id}"`: repetir a mesma chamada devolve a proposta que já existe
+- **Proposta:** `propor_cronograma`. Cria `POST /propostas`, que uma pessoa aprova ou recusa na web; aprovar gera
+  entrada no registro com desfazer. Cada proposta leva a chave `"{sessao_id}:{tool_use_id}"`: repetir a mesma chamada devolve a proposta que já existe
   (`ja_existia`).
 
 `tests/test_so_propoe.py` falha se surgir qualquer outra escrita.
@@ -106,9 +106,10 @@ O roteiro responde pela última mensagem de texto do usuário:
 
 | A pessoa fala de | O "modelo" faz |
 |---|---|
-| bloco / "2.760" | `consultar_estoque` → `historico_movimentos` → cita a conta e a quebra. Não propõe. |
-| cimento | `consultar_estoque` → `propor_pedido` do que falta → texto curto |
-| aço | `consultar_estoque` → "já está em cotação, não precisa pedir" |
+| como tá a obra / resumo | `resumo_obra` → uma frase e até cinco itens; o que falta cadastrar no fim |
+| quanto gastei / orçamento / estourou | `consultar_orcamento` → o gasto da etapa citada (ou da obra) e as etapas que passaram do orçado |
+| imposto / INSS / IBS / CBS / CNO | `consultar_tributos` → as linhas da conta como vieram |
+| compra / pedido / estoque | nenhuma ferramenta: "Eu não faço compras nem controlo estoque" e o que faz no lugar |
 | outra coisa | "Não sei com segurança." |
 
 Os números saem do `tool_result`, não de constantes: muda o seed, muda a resposta. O `usage` é plausível (a 1ª volta
