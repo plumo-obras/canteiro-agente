@@ -36,9 +36,8 @@ cobrado certo é o `POST /uso`.
 ## Contas
 
 - O modelo não faz conta. Pronta da API (domínio) ou pela ferramenta `calcular` (`calculo.py`: Decimal, AST restrita,
-  sem `eval`, "2.760" ambíguo recusado). `propor_pedido` calcula o total com `_conta_do_total` e devolve
-  `conta_do_valor`.
-- Conta nova de domínio (falta, saldo, atraso) vai para `canteiro_dominio.regras` no canteiro-api.
+  sem `eval`, "2.760" ambíguo recusado).
+- Conta nova de domínio (gasto, saldo, atraso) vai para `canteiro_dominio` no canteiro-api.
 
 ## Custo e consumo
 
