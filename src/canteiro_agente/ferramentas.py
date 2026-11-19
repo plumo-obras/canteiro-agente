@@ -290,20 +290,20 @@ def _resumo(r: dict[str, Any], eventos: Eventos) -> dict[str, Any]:
         prazo = {"cadastrado": False, "termino_contratual": fmt_mes(c.get("termino_contratual"))}
         falta_cadastro[f"sem_cronograma:{o['id']}"] = ("Cronograma não cadastrado: cadastre em Cronograma para "
                                                       "acompanhar prazo e etapas.")
-    # O gasto é o dinheiro que saiu, por comprovante confirmado: sem pedido, o realizado da API é ele, e o saldo é o
-    # que falta gastar (negativo = passou do orçado).
+    # O gasto é o dinheiro que saiu, por comprovante confirmado, e o saldo é o que falta gastar (negativo = passou do
+    # orçado).
     if f["tem_orcamento"]:
         financeiro: dict[str, Any] = {
             "orcado_atual": fmt_reais(f["orcado_atual"]), "aditivos": fmt_reais(f["aditivos"]),
-            "aditivos_pct": _pct(f.get("aditivos_pct")), "gasto": fmt_reais(f["realizado"]),
+            "aditivos_pct": _pct(f.get("aditivos_pct")), "gasto": fmt_reais(f["gasto"]),
             "falta_gastar": fmt_reais(f["saldo"]),
             "etapas_estouradas": [f"{x['etapa']} {x['descricao']} (passou {fmt_reais(-x['saldo'])} do orçado)"
                                   for x in f["etapas_estouradas"]],
         }
     else:
         financeiro = {"tem_orcamento": False}
-        if f.get("realizado"):
-            financeiro["gasto"] = fmt_reais(f["realizado"])
+        if f.get("gasto"):
+            financeiro["gasto"] = fmt_reais(f["gasto"])
         falta_cadastro[f"sem_orcamento:{o['id']}"] = ("Orçamento não importado: importe em Orçamento para acompanhar "
                                                      "custo por etapa.")
     if gastos := _gastos_por_comprovante(f.get("gastos")):
@@ -512,21 +512,21 @@ def criar_ferramentas(api: ApiCentral, eventos: Eventos) -> list:
             "aditivos": fmt_reais(t["aditivos"]),
             "aditivos_pct_sobre_contrato": _pct(t.get("aditivos_pct")),
             "orcado_atual": fmt_reais(t["atual"]),
-            "gasto": fmt_reais(t["realizado"]),
+            "gasto": fmt_reais(t["gasto"]),
             "falta_gastar": _reais_ou_none(t.get("saldo")),
             "lista_aditivos": [{"numero": v["numero"], "descricao": v.get("descricao"), "data": fmt_data(v.get("data")),
                                 "valor": fmt_reais(v["total"]), "itens": v["itens"]} for v in aditivos],
             "etapas": [{
                 "etapa": e["etapa"], "descricao": e["descricao"], "orcado_atual": fmt_reais(e["atual"]),
-                "aditivos": fmt_reais(e["aditivos"]), "gasto": fmt_reais(e["realizado"]),
+                "aditivos": fmt_reais(e["aditivos"]), "gasto": fmt_reais(e["gasto"]),
                 "falta_gastar": _reais_ou_none(e.get("saldo")),
                 "estourou": e.get("estourou"),
             } for e in o["etapas"]],
         }
         if gastos := _gastos_por_comprovante(t.get("gastos")):
             saida["gastos_por_comprovante"] = gastos
-        if t["sem_etapa"]["realizado"]:
-            saida["sem_etapa"] = {"gasto": fmt_reais(t["sem_etapa"]["realizado"])}
+        if t["sem_etapa"]["gasto"]:
+            saida["sem_etapa"] = {"gasto": fmt_reais(t["sem_etapa"]["gasto"])}
         achados: list[dict[str, Any]] = []
         if busca:
             alvo = _sem_acento(busca)
