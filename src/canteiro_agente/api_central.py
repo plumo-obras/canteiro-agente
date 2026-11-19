@@ -100,42 +100,17 @@ class ApiCentral:
     async def obras(self) -> list[dict[str, Any]]:
         return await self._req("GET", "/obras")
 
-    async def insumos(self, obra_id: str) -> list[dict[str, Any]]:
-        return await self._req("GET", f"/obras/{_id(obra_id)}/insumos")
-
-    async def movimentos(self, obra_id: str, insumo_id: str, limite: int) -> list[dict[str, Any]]:
-        return await self._req(
-            "GET", f"/obras/{_id(obra_id)}/insumos/{_id(insumo_id)}/movimentos", params={"limite": limite}
-        )
-
-    async def movimentos_da_obra(self, obra_id: str, limite: int) -> list[dict[str, Any]]:
-        return await self._req("GET", f"/obras/{_id(obra_id)}/movimentos", params={"limite": limite})
-
-    async def pedidos(self, obra_id: str, status: str | list[str] | None = None) -> list[dict[str, Any]]:
-        # lista vira ?status=a&status=b, que a API lê como "in"
-        params = {"status": status} if status else None
-        return await self._req("GET", f"/obras/{_id(obra_id)}/pedidos", params=params)
-
     async def resumo_obra(self, obra_id: str) -> dict[str, Any]:
         return await self._req("GET", f"/obras/{_id(obra_id)}/resumo")
 
     async def orcamento(self, obra_id: str) -> dict[str, Any]:
         return await self._req("GET", f"/obras/{_id(obra_id)}/orcamento")
 
-    async def etapas(self, obra_id: str) -> list[dict[str, Any]]:
-        return await self._req("GET", f"/obras/{_id(obra_id)}/etapas")
-
     async def cronograma(self, obra_id: str) -> dict[str, Any]:
         return await self._req("GET", f"/obras/{_id(obra_id)}/cronograma")
 
     async def tributos(self, obra_id: str) -> dict[str, Any]:
         return await self._req("GET", f"/obras/{_id(obra_id)}/tributos")
-
-    async def fornecedores(self) -> list[dict[str, Any]]:
-        return await self._req("GET", "/fornecedores")
-
-    async def propostas_pendentes(self, obra_id: str) -> list[dict[str, Any]]:
-        return await self._req("GET", "/propostas", params={"status": "pendente", "obra_id": obra_id, "limite": 100})
 
     async def criar_proposta(self, corpo: dict[str, Any]) -> dict[str, Any]:
         return await self._req("POST", "/propostas", json=corpo)

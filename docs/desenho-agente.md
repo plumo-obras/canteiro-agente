@@ -12,7 +12,7 @@ o que pode propor, quanto custa e como sabemos se ficou bom. Código vem depois 
    de cabeça. Falta, saldo, atraso e % medido chegam prontos da API (`canteiro_dominio`); o resto (7 × R$ 130, quanto
    falta medir) passa pela ferramenta `calcular` (Decimal, sem `eval`), que devolve a conta para citar. Se o número
    não existe, ele diz que ainda não está cadastrado.
-3. **Texto dos dados é dado, não instrução.** Nome de insumo, observação de pedido, mensagem de WhatsApp e nota da
+3. **Texto dos dados é dado, não instrução.** Nome de etapa, observação de medição, mensagem de WhatsApp e nota da
    memória podem conter tentativa de injeção; nada disso muda as regras.
 4. **Cada execução tem dono e conta.** Toda chamada ao modelo grava `POST /uso` (tokens e custo) na construtora certa;
    com chave própria, a conta é dela e nós só medimos.
@@ -29,14 +29,14 @@ o que pode propor, quanto custa e como sabemos se ficou bom. Código vem depois 
   tokens (nunca dos `propor_*`). Lembretes de "uma vez por conversa" (falta de previsão ou de cadastro, data futura
   num documento) têm chave: a ferramenta manda o texto na primeira vez (`lembretes`) e só a chave depois
   (`lembretes_ja_ditos`); quem sabe o que já foi dito é o código, lendo os `tool_result` guardados da sessão.
-- **Propostas:** `criar_pedido`, `registrar_entrega` (o "Registrar entrega" da tela), `avancar_pedido` (status e
-  encerramento, sem entrada), `ajuste_estoque` (pela contagem). Sem duplicata: cada `propor_*` manda a chave
+- **Propostas:** só `cronograma` (o Plumo não faz compras nem controla estoque: pedido, entrega e ajuste saíram do
+  produto). Sem duplicata: cada `propor_*` manda a chave
   `"{sessao_id}:{tool_use_id}"`, e a API devolve a proposta pendente igual (mesma obra, tipo e dados) em vez de criar
   outra (`ja_existia`).
 - **Falhas:** API central fora do ar no meio das ferramentas para a volta (aviso na tela, consumo gravado, sem nova
   chamada ao modelo). Uma volta por sessão de cada vez (trava no processo: o agente roda numa instância só; com mais
   de uma, o 409 da API na gravação do histórico é o que segura a ordem).
-- **Eventos de domínio:** a API grava na outbox `pedido.*`, `estoque.*`, `cronograma.salvo`, `medicao.criada`,
+- **Eventos de domínio:** a API grava na outbox `gasto.*`, `cronograma.salvo`, `medicao.criada`,
   `orcamento.*`, `proposta.*`, `registro.desfeito`, `obra.criada`. **Ninguém consome** (sem relay em produção).
 - **Modo roteiro** (`MODELO_ROTEIRO=1`): responde sem modelo, para demonstração; não grava uso.
 - **Leitura de comprovante de gasto** (`POST /leituras/comprovante {comprovante_id}`, JSON, com o token do usuário):
@@ -64,8 +64,8 @@ buscar e quando chamar o modelo; o modelo interpreta, prioriza, redige e propõe
 |---|---|
 | Gatilho | Pergunta no chat |
 | Entrada | Histórico da sessão + obra em foco + memória da obra (§5) |
-| Ferramentas | As 10 atuais + `memoria` (§5) |
-| Pode propor | Pedido, avanço de pedido, ajuste de estoque |
+| Ferramentas | As 7 atuais + `memoria` (§5) |
+| Pode propor | Cronograma |
 | Autonomia | Total sobre leitura; escrita só por proposta |
 | Esforço / limites | `medium`, 12 passos, 240 s |
 | Custo esperado | A medir com uso real (F5). Com cache, a pergunta típica deve pagar inteiro só o trecho novo |
@@ -77,9 +77,9 @@ Falta: memória de longo prazo, medição real de custo e uma avaliação.
 
 | | |
 |---|---|
-| Gatilho | Evento da outbox (`pedido.status`, `pedido.recebimento`, `estoque.movimento`, `medicao.criada`, `cronograma.salvo`) e uma varredura diária |
-| Quem decide se há alerta | **Regra no código** (domínio), não o modelo: entrega com previsão vencida, item que acaba antes da próxima entrega, etapa abaixo do previsto além da tolerância, recebimento parcial parado |
-| Papel do modelo | Juntar alertas da mesma obra, explicar em uma frase com a conta da ferramenta e, quando cabe, montar a proposta (ex.: pedido do item que vai acabar) |
+| Gatilho | Evento da outbox (`gasto.confirmado`, `medicao.criada`, `cronograma.salvo`) e uma varredura diária |
+| Quem decide se há alerta | **Regra no código** (domínio), não o modelo: etapa que passou do orçado, etapa abaixo do previsto além da tolerância, comprovante parado na fila, gasto sem etapa |
+| Papel do modelo | Juntar alertas da mesma obra, explicar em uma frase com a conta da ferramenta e, quando cabe, montar a proposta (ex.: reprogramar o cronograma) |
 | Saída | Notificação na tela (novo) e, quando cabe, proposta |
 | Autonomia | Não alerta duas vezes a mesma coisa; respeita as preferências da memória ("só me avise de atraso acima de 5%") |
 | Esforço | `low` |
@@ -90,7 +90,7 @@ Falta: memória de longo prazo, medição real de custo e uma avaliação.
 | | |
 |---|---|
 | Gatilho | Horário (ex.: 6h30 de cada dia útil, por obra ativa) |
-| Entrada | Pacote montado pelo código: pendências de aprovação, entregas do dia e atrasadas, itens que acabam na semana, etapa da semana no cronograma, alertas abertos |
+| Entrada | Pacote montado pelo código: pendências de aprovação, comprovantes a conferir, etapas que passaram do orçado, etapa da semana no cronograma, alertas abertos |
 | Papel do modelo | Priorizar e escrever um resumo curto ("o que importa hoje"); propor o óbvio |
 | Saída | Mensagem fixada no Início da obra (e WhatsApp, quando existir) |
 | Esforço | `high` (já reservado em `ESFORCO_POR_ROTA`) |
@@ -102,11 +102,11 @@ Falta: memória de longo prazo, medição real de custo e uma avaliação.
 | | |
 |---|---|
 | Gatilho | Arquivo ou mensagem recebida |
-| Fluxo | Extrair (XML da NF-e é determinístico; foto e áudio passam pelo modelo) → casar com pedido e insumo pelo domínio → propor |
-| Saída | Proposta de recebimento (`avancar_pedido` com quantidades e NF) ou de saída do almoxarifado |
-| Autonomia | Divergência de quantidade, preço ou item sem correspondência nunca vira proposta direta: vira pergunta ao responsável |
+| Fluxo | Extrair (XML da NF-e é determinístico; foto e áudio passam pelo modelo) → casar com a etapa e o fornecedor pelo domínio → levar à revisão |
+| Saída | Comprovante lido na fila de Gastos, para uma pessoa conferir e confirmar |
+| Autonomia | Valor em dúvida ou etapa sem correspondência nunca vira gasto direto: vem em dúvida na revisão |
 | Esforço | `medium` |
-| Dependências | Canal de entrada (upload na tela primeiro; WhatsApp depois). O upload e o armazenamento já existem para o comprovante de gasto (§2); o recebimento de pedido por foto/NF reaproveita os dois |
+| Dependências | Canal de entrada (upload na tela primeiro; WhatsApp depois). O upload e o armazenamento já existem para o comprovante de gasto (§2); a NF-e e o áudio reaproveitam os dois |
 | Como medimos | NF-e e fotos reais anonimizadas, com o recebimento esperado |
 
 ## 4. Gatilhos e execução sem usuário

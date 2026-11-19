@@ -21,10 +21,10 @@ from canteiro_agente.main import criar_app
 from canteiro_agente.sessoes import HistoricoDivergiu, NaoEncontrada, SessoesApi
 
 import falsos
-from falsos import ACO, BLOCO, OBRA, OBRA_EMEI, TOKEN_USUARIO, ApiFalsa, Resposta, ferramenta, pausada, texto
+from falsos import OBRA, OBRA_EMEI, TOKEN_USUARIO, ApiFalsa, Resposta, ferramenta, pausada, texto
 
-PEDIDO_CIMENTO = {"obra_id": OBRA, "insumo_id": "insumo-cimento", "quantidade": "34", "fornecedor": "Votorantim",
-                  "valor": "1.360,00", "justificativa": "repor a falta de cimento"}
+CRONOGRAMA = {"obra_id": OBRA_EMEI, "inicio": "2026-01", "etapas": [{"etapa": "1", "equipe": 4}],
+              "justificativa": "serviços preliminares primeiro"}
 
 
 def _resultados(pedido_anthropic):
@@ -63,12 +63,12 @@ async def test_erro_de_rede_vira_api_fora_do_ar_sem_texto_cru():
 
 async def test_api_caida_no_meio_para_a_volta_sem_chamar_o_modelo_de_novo(ambiente):
     amb = ambiente([
-        Resposta([texto("Vou ver o estoque."), ferramenta("consultar_estoque", {"obra_id": OBRA})],
+        Resposta([texto("Vou ver o orçamento."), ferramenta("consultar_orcamento", {"obra_id": OBRA_EMEI})],
                  stop_reason="tool_use", entrada=900),
         Resposta([texto("não devia chegar aqui")]),
     ])
     amb.api.fora_do_ar_depois = 0
-    eventos = await amb.conversar("quanto tem de aço?", obra_id=OBRA)
+    eventos = await amb.conversar("quanto já gastei?", obra_id=OBRA_EMEI)
 
     assert ("erro", {"mensagem": FORA_DO_AR}) in eventos
     assert [e for e, _ in eventos][-1] == "fim"
@@ -190,12 +190,12 @@ async def test_mesma_chamada_repetida_leva_a_mesma_chave_e_nao_duplica():
     async with api_falsa.cliente() as http:
         eventos = Eventos(sessao_id="sessao-1")
         fs = {f.name: f for f in criar_ferramentas(ApiCentral(http, "http://api.teste", TOKEN_USUARIO), eventos)}
-        entrada = dict(PEDIDO_CIMENTO)
-        bloco = SimpleNamespace(type="tool_use", name="propor_pedido", id="toolu_9", input=entrada)
+        entrada = dict(CRONOGRAMA)
+        bloco = SimpleNamespace(type="tool_use", name="propor_cronograma", id="toolu_9", input=entrada)
         resultados = []
         for _ in range(2):                       # a mesma chamada de ferramenta executada duas vezes
             eventos.nova_resposta([bloco])
-            resultados.append(json.loads(await fs["propor_pedido"].call(entrada)))
+            resultados.append(json.loads(await fs["propor_cronograma"].call(entrada)))
     chaves = [c.corpo["chave_idempotencia"] for c in api_falsa.feitas("POST", "/propostas")]
     assert chaves == ["sessao-1:toolu_9"] * 2
     assert len(api_falsa.propostas) == 1
@@ -205,29 +205,29 @@ async def test_mesma_chamada_repetida_leva_a_mesma_chave_e_nao_duplica():
 
 
 async def test_duas_chamadas_da_mesma_ferramenta_na_mesma_resposta_tem_chaves_proprias(ambiente):
-    a = {"obra_id": OBRA, "insumo_id": BLOCO, "quantidade": "-190", "motivo": "quebra"}
-    b = {"obra_id": OBRA, "insumo_id": ACO, "quantidade": "35", "motivo": "sobra achada"}
+    a = CRONOGRAMA
+    b = {**CRONOGRAMA, "inicio": "2026-02", "justificativa": "começando um mês depois"}
     amb = ambiente([
-        Resposta([ferramenta("propor_ajuste_estoque", a, "toolu_a"), ferramenta("propor_ajuste_estoque", b, "toolu_b")],
+        Resposta([ferramenta("propor_cronograma", a, "toolu_a"), ferramenta("propor_cronograma", b, "toolu_b")],
                  stop_reason="tool_use"),
         Resposta([texto("Duas propostas aguardando aprovação.")]),
     ])
-    eventos = await amb.conversar("ajusta o bloco e o aço", obra_id=OBRA)
+    eventos = await amb.conversar("monta o cronograma em janeiro e em fevereiro", obra_id=OBRA_EMEI)
     sessao_id = eventos[-1][1]["sessao_id"]
     posts = amb.api.feitas("POST", "/propostas")
-    assert [(p.corpo["dados"]["insumo_id"], p.corpo["chave_idempotencia"]) for p in posts] == [
-        (BLOCO, f"{sessao_id}:toolu_a"), (ACO, f"{sessao_id}:toolu_b")]
+    assert [(p.corpo["dados"]["inicio"], p.corpo["chave_idempotencia"]) for p in posts] == [
+        ("2026-01", f"{sessao_id}:toolu_a"), ("2026-02", f"{sessao_id}:toolu_b")]
 
 
 async def test_proposta_igual_em_outra_volta_avisa_que_ja_espera_aprovacao(ambiente):
     amb = ambiente([
-        Resposta([ferramenta("propor_pedido", PEDIDO_CIMENTO, "toolu_1")], stop_reason="tool_use"),
+        Resposta([ferramenta("propor_cronograma", CRONOGRAMA, "toolu_1")], stop_reason="tool_use"),
         Resposta([texto("Proposta criada.")]),
-        Resposta([ferramenta("propor_pedido", PEDIDO_CIMENTO, "toolu_2")], stop_reason="tool_use"),
+        Resposta([ferramenta("propor_cronograma", CRONOGRAMA, "toolu_2")], stop_reason="tool_use"),
         Resposta([texto("Ela já está aguardando aprovação.")]),
     ])
-    sessao_id = (await amb.conversar("compra 34 sc de cimento"))[-1][1]["sessao_id"]
-    eventos = await amb.conversar("compra o cimento", sessao_id=sessao_id)
+    sessao_id = (await amb.conversar("monta o cronograma", obra_id=OBRA_EMEI))[-1][1]["sessao_id"]
+    eventos = await amb.conversar("monta o cronograma de novo", sessao_id=sessao_id, obra_id=OBRA_EMEI)
 
     assert len(amb.api.propostas) == 1
     [proposta] = [d for e, d in eventos if e == "proposta"]
@@ -239,7 +239,7 @@ async def test_proposta_igual_em_outra_volta_avisa_que_ja_espera_aprovacao(ambie
 
 # ---------------------------------------------------------------- 5. a conta vem da API
 
-async def test_orcamento_cita_saldo_estouro_e_percentual_da_api(monkeypatch):
+async def test_orcamento_cita_falta_gastar_estouro_e_percentual_da_api(monkeypatch):
     """Números de propósito diferentes da subtração/divisão: se o agente fizesse conta, o teste veria."""
     orc = copy.deepcopy(falsos.ORCAMENTO_EMEI)
     orc["totais"] |= {"saldo": 123, "aditivos_pct": 1234}
@@ -249,40 +249,23 @@ async def test_orcamento_cita_saldo_estouro_e_percentual_da_api(monkeypatch):
     async with api_falsa.cliente() as http:
         fs = {f.name: f for f in criar_ferramentas(ApiCentral(http, "http://api", TOKEN_USUARIO), Eventos())}
         o = json.loads(await fs["consultar_orcamento"].call({"obra_id": OBRA_EMEI}))
-    assert (o["saldo_a_comprometer"], o["aditivos_pct_sobre_contrato"]) == ("R$ 1,23", "12,3%")
+    assert (o["falta_gastar"], o["aditivos_pct_sobre_contrato"]) == ("R$ 1,23", "12,3%")
     fund = next(e for e in o["etapas"] if e["etapa"] == "3")
-    assert (fund["saldo"], fund["estourou"]) == ("-R$ 45,00", True)
-
-
-async def test_pedido_cita_o_falta_entregar_da_api(monkeypatch):
-    original = ApiFalsa._pedidos
-
-    def pedidos(self):
-        ps = original(self)
-        ps[0]["linhas"][0] |= {"recebida": 1_000_000, "falta_entregar": 0}     # encerrado: a API diz 0
-        return ps
-
-    monkeypatch.setattr(ApiFalsa, "_pedidos", pedidos)
-    api_falsa = ApiFalsa()
-    async with api_falsa.cliente() as http:
-        fs = {f.name: f for f in criar_ferramentas(ApiCentral(http, "http://api", TOKEN_USUARIO), Eventos())}
-        ps = json.loads(await fs["listar_pedidos"].call({"obra_id": OBRA}))
-    assert (ps[0]["linhas"][0]["falta_entregar"], ps[0]["linhas"][0]["falta_entregar_milesimos"]) == ("0 kg", 0)
-    assert ps[1]["linhas"][0]["falta_entregar"] == "120 sc"
+    assert (fund["falta_gastar"], fund["estourou"]) == ("-R$ 45,00", True)
 
 
 # ---------------------------------------------------------------- 6. evento `ferramenta` no começo; 422 com detail
 
 async def test_evento_ferramenta_sai_quando_a_ferramenta_comeca(ambiente):
     amb = ambiente([
-        Resposta([ferramenta("consultar_estoque", {"obra_id": OBRA})], stop_reason="tool_use"),
+        Resposta([ferramenta("consultar_orcamento", {"obra_id": OBRA_EMEI})], stop_reason="tool_use"),
         Resposta([texto("Pronto.")]),
     ])
     liberar = asyncio.Event()
 
     class Lenta(httpx.AsyncBaseTransport):
         async def handle_async_request(self, req):
-            if req.url.path.endswith("/insumos"):
+            if req.url.path.endswith("/orcamento"):
                 await liberar.wait()             # a consulta só termina depois que a tela viu o anúncio
             return amb.api(req)
 
@@ -290,7 +273,7 @@ async def test_evento_ferramenta_sai_quando_a_ferramenta_comeca(ambiente):
     nomes = []
 
     async def ler():
-        async for nome, _ in conversar(amb.dep, TOKEN_USUARIO, PedidoConversa("estoque", obra_id=OBRA)):
+        async for nome, _ in conversar(amb.dep, TOKEN_USUARIO, PedidoConversa("orçamento", obra_id=OBRA_EMEI)):
             nomes.append(nome)
             if nome == "ferramenta":
                 liberar.set()

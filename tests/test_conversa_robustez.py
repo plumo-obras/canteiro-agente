@@ -15,11 +15,11 @@ from canteiro_agente.conversa import (
     conversar,
 )
 
-from falsos import OBRA, TOKEN_USUARIO, Resposta, ferramenta, json_ilegivel, pausada, texto
+from falsos import OBRA_EMEI, TOKEN_USUARIO, Resposta, ferramenta, json_ilegivel, pausada, texto
 
-PROPOSTA_CIMENTO = {
-    "obra_id": OBRA, "insumo_id": "insumo-cimento", "quantidade": "34", "fornecedor": "Votorantim",
-    "valor": "1.360,00", "justificativa": "repor a falta de cimento",
+PROPOSTA_CRONOGRAMA = {
+    "obra_id": OBRA_EMEI, "inicio": "2026-01", "etapas": [{"etapa": "1", "equipe": 4}],
+    "justificativa": "serviços preliminares primeiro",
 }
 
 
@@ -71,11 +71,12 @@ async def test_gerador_fechado_tambem_grava_o_uso(ambiente):
 
 async def test_proposta_antes_da_queda_fica_no_historico_e_nao_se_repete(ambiente):
     amb = ambiente([
-        Resposta([ferramenta("propor_pedido", PROPOSTA_CIMENTO)], stop_reason="tool_use", entrada=1000, saida=200),
+        Resposta([ferramenta("propor_cronograma", PROPOSTA_CRONOGRAMA)], stop_reason="tool_use", entrada=1000,
+                 saida=200),
         pausada(Resposta([texto("Deixei a proposta aguardando aprovação.")]), 30),
-        Resposta([texto("A proposta de 34 sc já está aguardando aprovação.")]),
+        Resposta([texto("O cronograma já está aguardando aprovação.")]),
     ])
-    await _cair_no_meio(amb, "Pede 34 sacos de cimento na Votorantim por 1.360")
+    await _cair_no_meio(amb, "Monta o cronograma a partir de janeiro")
 
     assert len(amb.api.feitas("POST", "/propostas")) == 1
     # A 1ª resposta foi registrada inteira uma vez; a 2ª, cortada, pelo que já tinha gastado. Nada em dobro.
@@ -89,7 +90,7 @@ async def test_proposta_antes_da_queda_fica_no_historico_e_nao_se_repete(ambient
     assert guardada.mensagens[1]["content"][-1]["type"] == "tool_use"
     assert guardada.mensagens[2]["content"][0]["type"] == "tool_result"
 
-    eventos = await amb.conversar("e o cimento?", sessao_id=sessao_id)
+    eventos = await amb.conversar("e o cronograma?", sessao_id=sessao_id)
     assert [e for e, _ in eventos][-1] == "fim"
     ultimo = amb.anthropic.pedidos[-1]
     assert [m["role"] for m in ultimo["messages"]] == ["user", "assistant", "user", "user"]
@@ -194,5 +195,4 @@ async def test_resultados_antigos_de_ferramenta_sao_limpos_no_servidor(ambiente)
     assert edicao["trigger"] == {"type": "input_tokens", "value": 150_000}
     assert edicao["clear_at_least"] == {"type": "input_tokens", "value": 30_000}
     # O que foi proposto nunca some da vista do modelo (senão ele propõe de novo).
-    assert edicao["exclude_tools"] == ["propor_ajuste_estoque", "propor_avanco_pedido", "propor_cronograma",
-                                         "propor_entrega", "propor_pedido"]
+    assert edicao["exclude_tools"] == ["propor_cronograma"]
